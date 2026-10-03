@@ -5,6 +5,10 @@ data/
 *.log
 .DS_Store
 
+# Docker：使用者自己的配置（端口、域名）不该进版本库。
+# `.env.example` 是模板，要提交。
+.env
+
 # 原始资产包（254MB）与管线产物都不进版本库。
 # 产物可由 tools/build_assets.py 从原始包完整重建；
 # 但 scenes/ 与 assets/index.json 的「索引」体积很小、

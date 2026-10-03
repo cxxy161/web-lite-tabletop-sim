@@ -1,0 +1,53 @@
+# Caddy 配置（可选的反代 + 自动 HTTPS）
+#
+# 启用：docker compose --profile tls up -d
+#
+# Caddy 会自动申请、续期证书，并自动把 HTTP 重定向到 HTTPS。
+# **WebSocket 不需要额外配置** —— Caddy 2 的 reverse_proxy 默认就处理
+# Upgrade 头。但 `stream_timeout` 要留意（见下）。
+
+{$SITE_ADDRESS:localhost} {
+	# 反代到本体容器。
+	#
+	# 这里反代的是 **HTTP + WS 同一个端口** —— 本项目把 WS 挂在
+	# http server 的 /ws 上（noServer + handleUpgrade），
+	# 所以不需要分成两条规则。
+	reverse_proxy tabletop:3000 {
+		# **WebSocket 是长连接，别让反代把它掐了。**
+		#
+		# 本项目自己有心跳（30s 一次 ping），所以正常情况不会空闲超时；
+		# 但如果客户端在后台被浏览器挂起（手机锁屏），心跳会停 ——
+		# 这时反代不该把连接直接断掉，让客户端重连后从全量快照恢复。
+		#
+		# 设成 0 表示不主动超时（由两端的心跳/关闭来结束）。
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+
+	# 贴图是不可变内容（按内容哈希命名），让浏览器放心长缓存。
+	# 服务端自己也发了 Cache-Control，这里不覆盖，只是显式记录意图。
+	#
+	# 访问日志：默认会记完整 URL，而本项目的 WS 连接把 token 放在
+	# **查询串**里（`/ws?...&token=xxx`），所以日志会包含 token。
+	# 局域网自建可以接受；在意就换成 `log { output discard }` 关掉，
+	# 或者用 `format filter` 把 query 抹掉。
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 3
+		}
+	}
+
+	encode gzip
+
+	header {
+		# 本项目是自托管工具，不需要被搜索引擎收录
+		X-Robots-Tag "noindex, nofollow"
+		# 没有外部资源，全禁掉更省心
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; script-src 'self'"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+}

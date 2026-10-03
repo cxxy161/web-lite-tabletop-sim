@@ -1,0 +1,79 @@
+# docker compose up -d
+#
+# 两个服务：
+#   tabletop  必选，本体
+#   caddy     可选（--profile tls），自动 HTTPS 反代
+#
+# 不加 profile 时只有本体起来，直接暴露端口 —— 局域网自己玩够了。
+
+services:
+  tabletop:
+    build: .
+    image: web-lite-tabletop-sim:latest
+    container_name: tabletop
+    restart: unless-stopped
+
+    ports:
+      # 左边是宿主机端口，想换就改这里（比如 8080:3000）
+      - "${HOST_PORT:-3222}:3000"
+
+    environment:
+      # 数据目录已在镜像里设好；这里只列可调项
+      TZ: "${TZ:-Asia/Shanghai}"
+      # 盘面在内存里空闲多久卸载（毫秒）。弱服务器可以调小
+      BOARD_IDLE_MS: "${BOARD_IDLE_MS:-600000}"
+
+    volumes:
+      # **唯一需要持久化的东西** —— 房间元数据 + 盘面快照。
+      # 用命名卷而不是绑定挂载：不会因为宿主机权限/路径问题起不来。
+      # 想看文件就 `docker compose exec tabletop ls /app/data`，
+      # 或者把下面这行换成 ./data:/app/data（要先 chown 成 1000:1000）。
+      - tabletop-data:/app/data
+
+      # 想让棋盘有贴图，二选一：
+      #
+      # (A) 构建时就打进镜像 —— 把 public/assets/ 放好再 build。
+      #     仓库不含贴图（版权+体积），所以要自己跑一次资产管线：
+      #         python3 tools/build_assets.py
+      #     build 时 .dockerignore 不排除 public/assets，会被拷进去。
+      #
+      # (B) 运行时挂载（换模组/换贴图不用重建镜像）：
+      # - ./public/assets:/app/public/assets:ro
+
+    # 内存本来就很省（单房间 0.36MB，30 个房间 10MB），
+    # 但弱服务器上留一道闸比事后 OOM 强。
+    # 需要的话取消注释：
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 256M
+
+  # ---- 可选：自动 HTTPS 反代 -------------------------------------------
+  #
+  #   docker compose --profile tls up -d
+  #
+  # 需要：一个指向本机的域名，以及 80/443 放行。
+  # 好处：真机测试时浏览器要求 HTTPS 才能用某些 API；
+  #       且能遮住「token 走 WS 查询串」这件事（没有 HTTPS 时可被嗅探）。
+  caddy:
+    image: caddy:2-alpine
+    container_name: tabletop-caddy
+    profiles: ["tls"]
+    restart: unless-stopped
+    depends_on:
+      - tabletop
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # 你的域名。Caddy 会自动申请并续期证书。
+      SITE_ADDRESS: "${SITE_ADDRESS:-localhost}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  tabletop-data:
+  caddy-data:
+  caddy-config:
