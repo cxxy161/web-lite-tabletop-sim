@@ -482,14 +482,19 @@ class Room {
 
       // 冻结 / 解冻。注意这是**唯一允许作用于已冻结棋子的 op** ——
       // 否则一旦冻上就再也解不开了。
+      //
+      // **不改 z**：冻结是状态标记，不是「放下」。
+      // 早期这里写了 `p.z = ++this.zSeq`，于是把一枚棋子「置底」之后
+      // 一冻结（或解冻）它立刻跳回最上面 —— 层叠关系被一个
+      // 与层叠无关的操作重置了。切形态、改颜色同理（见下）。
+      // 契约：**只有 move / clone / dice / token 这类「放上去」的动作改 z**。
       case 'lock': {
         const p = this.pieces.get(op.id);
         if (!p) return null;
         p.lk = op.lk ? 1 : 0;
-        p.z = ++this.zSeq;
         this.seq++;
         this.save();
-        return { k: 'lock', id: p.id, lk: p.lk, z: p.z };
+        return { k: 'lock', id: p.id, lk: p.lk };
       }
 
       // 切换形态。st 是形态数组（st[0] = 存档里的原始形态），
@@ -505,12 +510,12 @@ class Room {
         p.bimg = p.st[si].bimg || p.st[si].img;
         p.w = p.st[si].w;
         p.h = p.st[si].h;
-        p.z = ++this.zSeq;
+        // 同样不改 z：切形态是「它变成了另一个样子」，不是「把它放上去」
         this.seq++;
         this.save();
         return {
           k: 'state', id: p.id, si: p.si,
-          img: p.img, bimg: p.bimg, w: p.w, h: p.h, z: p.z
+          img: p.img, bimg: p.bimg, w: p.w, h: p.h
         };
       }
 
@@ -710,13 +715,13 @@ class Room {
 
         if (!changed) return null;
 
-        p.z = ++this.zSeq;
+        // 同样不改 z：改颜色 / 改大小 / 改文字都不是「放下」。
+        // 否则「置底 -> 调个大小」就会把它顶回最上面。
         this.seq++;
         this.save();
         return {
           k: 'edit', id: p.id,
-          c: p.c, sh: p.sh, w: p.w, h: p.h, tx: p.tx || '',
-          z: p.z
+          c: p.c, sh: p.sh, w: p.w, h: p.h, tx: p.tx || ''
         };
       }
 
