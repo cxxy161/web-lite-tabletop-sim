@@ -61,6 +61,10 @@ class Room {
 
     // 视野区（双盲）。空数组 = 没有双盲，一切照旧可见。
     this.zoneList = [];
+    // 最后活动时间（有 op / 有人进出时更新），房间 GC 用它判断能否卸载。
+    // 不用 clients.size 单独判定：一个刚建好还没人连上的房间也算「无人」，
+    // 但它不该立刻被回收。
+    this.lastActive = Date.now();
     // 每个连接「已下发的棋子 id 集合」，用于可见集差分：
     // 棋子移出视野时要主动通知客户端删掉，而不是只停止发送它的 op。
     this.seen = new Map();       // ws -> Set<pieceId>
@@ -290,9 +294,39 @@ class Room {
     return { add: add, remove: remove };
   }
 
+  /**
+   * 连接断开时清掉它的可见集基线。
+   *
+   * **这是一个真实的泄漏**：`seen` 以 ws 对象为键，每条含 778 个 id
+   * （约 20KB）。断线时只删 clients、不删 seen 的话，玩家每刷新一次
+   * 就留下一条、永不回收 —— 实测 200 次进出涨 4MB，1000 次刷新 36MB。
+   * 弱服务器上这个泄漏是 O(刷新次数) 的，迟早出事。
+   */
+  dropConnection(ws) {
+    this.clients.delete(ws);
+    this.seen.delete(ws);
+  }
+
   /** 某个连接此刻能看到这枚棋子的真实正面吗（用于拦住会泄露的操作） */
   canSeeFull(ws, piece) {
     return zones.full(piece, this.zoneList, this._teamOf(ws));
+  }
+
+  /** 记一次活动。GC 靠它判断房间还有没有价值。 */
+  touch() {
+    this.lastActive = Date.now();
+  }
+
+  /**
+   * 这个房间可以被回收了吗。
+   *
+   * 两个条件都要满足：**没人连着**，而且**空闲够久**。
+   * 只看「没人」是不够的 —— 玩家刷新页面的那一瞬间正是 0 连接，
+   * 那时卸载会让所有人重连一次（虽然能恢复，但白费一次往返）。
+   */
+  isIdle(now, idleMs) {
+    if (this.clients.size > 0) return false;
+    return (now || Date.now()) - this.lastActive > (idleMs || 0);
   }
 
   /* ---------- 视野区增删改 ---------- */
@@ -368,6 +402,7 @@ class Room {
     this._flush();
   }
 
+
   /* ---------- 校验 ---------- */
 
   // 严格要求 number 且有限。不能用 Number(v)：
@@ -411,6 +446,7 @@ class Room {
   /* ---------- op ---------- */
 
   applyOp(op) {
+    this.touch();
     if (!op || typeof op !== 'object') return null;
 
     switch (op.k) {
@@ -853,6 +889,38 @@ class RoomStore {
 
   flushAll() {
     this.rooms.forEach((r) => r.flushNow());
+  }
+
+  /**
+   * 把一个房间从内存里卸掉（先落盘）。
+   *
+   * 给 GC 用：无人且久未活动的房间留在内存里没有意义，
+   * 下次有人进来会按需重建（`get()` 重新走 `_restore()`）。
+   * **只卸载内存，不删盘面文件** —— 要不要留数据是使用者的决定，
+   * 代码不替他做主。
+   */
+  unload(id) {
+    const r = this.rooms.get(id);
+    if (!r) return false;
+    r.flushNow();                 // 先落盘，别丢改动
+    this.rooms.delete(id);
+    return true;
+  }
+
+  /**
+   * 回收空闲房间（释放内存）。返回被卸载的房间 id 列表。
+   *
+   * **不删盘面文件** —— 卸载只是把它移出内存，下次有人进来
+   * `get()` 会重新从盘上恢复。删数据是使用者的决定，代码不替他做主。
+   */
+  sweep(now, idleMs) {
+    const gone = [];
+    this.rooms.forEach((r, id) => {
+      if (!r.isIdle(now, idleMs)) return;
+      this.unload(id);
+      gone.push(id);
+    });
+    return gone;
   }
 }
 

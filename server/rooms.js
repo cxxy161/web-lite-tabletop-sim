@@ -306,6 +306,21 @@ class RoomMeta {
     return removed;
   }
 
+  /**
+   * 房间元数据能被回收了吗。
+   *
+   * 判据是「**名册为空**」—— 所有人（含房主）都因断线宽限期到期
+   * 被移出了名册。只要还有一个名字在里面就不回收：
+   * 那是别人可能回来的痕迹。
+   *
+   * 与盘面（Room）的 GC 判据**刻意不同**：盘面看「没人连着 + 空闲够久」，
+   * 因为盘面可以随进随出地重建；而名册一旦丢了，这个邀请码就再也
+   * 找不回来，所以判据更保守。
+   */
+  isEmpty() {
+    return this.players.size === 0;
+  }
+
   publicState() {
     return {
       code: this.code,
@@ -421,12 +436,33 @@ class RoomRegistry {
     }
   }
 
-  // 定期清掉超时的离线玩家
+  /**
+   * 回收「名册为空」的房间元数据。返回被移除的邀请码列表。
+   *
+   * **只移除元数据，不删盘面文件**（data/<code>.json）。
+   * 盘面留在磁盘上不占内存（只在有人进房时才读），万一有人拿着旧
+   * 邀请码回来还能靠它恢复。要清磁盘是使用者的决定，代码不替他做主。
+   */
+  sweepEmpty() {
+    const gone = [];
+    this.byCode.forEach((r, code) => {
+      if (r.isEmpty()) gone.push(code);
+    });
+    gone.forEach((code) => this.byCode.delete(code));
+    if (gone.length) this.flushNow();
+    return gone;
+  }
+
+  // 定期清掉超时的离线玩家，顺带回收空房间
   startSweeper(intervalMs) {
     const t = setInterval(() => {
       let n = 0;
       this.byCode.forEach((r) => { n += r.sweepOffline(); });
       if (n) console.log(`[rooms] 清理离线玩家 ${n} 名`);
+      // 名册清空后房间元数据也没必要留着 ——
+      // 否则朋友开几百个房间，byCode 只增不减。
+      const gone = this.sweepEmpty();
+      if (gone.length) console.log(`[rooms] 回收空房间 ${gone.join(' ')}`);
     }, intervalMs || 15000);
     if (t.unref) t.unref();
     return t;

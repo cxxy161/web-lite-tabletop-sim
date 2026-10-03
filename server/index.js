@@ -21,6 +21,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { WebSocketServer } = require('ws');
 const { RoomStore } = require('./room');
 const { SceneStore } = require('./scene');
@@ -33,7 +34,13 @@ const codec = require('./codec');
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
-const DATA_DIR = path.join(__dirname, '..', 'data');
+// 数据目录可用环境变量覆盖。两个用途：
+//   1. 部署时把数据放到 volume / 别的盘（容器里尤其需要）
+//   2. **测试隔离** —— 直接对工作目录的 data/ 跑测试很容易误伤真实数据
+//      （我为此真丢过一次房间），所以测试一律指到临时目录。
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(__dirname, '..', 'data');
 
 const PING_INTERVAL_MS = 30000;
 const MAX_WS_BYTES = 1024 * 1024;     // WS 入站上限（客户端只发小 op，留足余量）
@@ -57,11 +64,80 @@ const MIME = {
 // 贴图与场景是构建期产物，内容按内容哈希命名，可以长缓存
 const IMMUTABLE = /^\/assets\//;
 
+/**
+ * 缓存策略。
+ *
+ * `/assets/` 是内容哈希命名的，可以放心长缓存。
+ * 其余一律 `no-cache` —— **注意 `no-cache` 不是「不缓存」，
+ * 而是「每次都要回来验一下」**，配合 ETag/304，命中时是 0 字节响应。
+ * 不用 `no-store`：那会连 ETag 校验都省掉，每次重下全部内容。
+ */
+function cacheControl(immutable) {
+  return immutable
+    ? 'public, max-age=31536000, immutable'
+    : 'no-cache';
+}
+
+/**
+ * 压缩结果缓存（filePath -> {etag, buf}）。
+ *
+ * 上限按**字节**而不是条数：一个大 JSON 和一个小 CSS 差两个数量级。
+ * 只装文本类（webp 不压），所以总字节可控（全部 JS+场景 JSON
+ * 压缩后不到 1MB）。
+ */
+const GZ_CACHE_MAX = 8 * 1024 * 1024;
+const gzCache = new Map();
+let gzCacheBytes = 0;
+
+function rememberGz(filePath, etag, buf) {
+  const old = gzCache.get(filePath);
+  if (old) gzCacheBytes -= old.buf.length;
+  gzCache.set(filePath, { etag: etag, buf: buf });
+  gzCacheBytes += buf.length;
+  // 超了就从头丢（Map 保持插入序，最先插入的是最久没更新的）
+  while (gzCacheBytes > GZ_CACHE_MAX && gzCache.size > 1) {
+    const k = gzCache.keys().next().value;
+    const v = gzCache.get(k);
+    gzCacheBytes -= v.buf.length;
+    gzCache.delete(k);
+  }
+}
+
+function gzipHeaders(buf, etag) {
+  return {
+    'Content-Encoding': 'gzip',
+    // 长缓存资源要配 Vary，免得代理把压缩版发给不解压的客户端
+    Vary: 'Accept-Encoding',
+    'Content-Length': buf.length
+  };
+}
+
 const scenes = new SceneStore(path.join(PUBLIC_DIR, 'scenes'));
 
 // 房间元数据（谁建的、谁是房主、有谁）与盘面分开存，见 rooms.js 的文件头
 const registry = new RoomRegistry({ dir: DATA_DIR });
 registry.startSweeper(15000);
+
+/**
+ * 盘面房间的 GC：无人 + 空闲够久的房间从内存里卸掉。
+ *
+ * 为什么要单独一条：盘面（Room）是按需创建的，但**创建后就一直在
+ * `rooms.rooms` 里**。朋友开一晚上房间，几百个 778 枚棋子的盘面
+ * 就都留在内存里了。卸载不丢数据 —— 盘面文件还在，下次有人进
+ * `get()` 会重新读回来。
+ *
+ * 空闲阈值远大于断线宽限期（60s）：刷新页面的瞬间连接数是 0，
+ * 阈值太小会让每个人刷新时都被卸载一次（虽然能恢复，但白费往返）。
+ */
+const BOARD_IDLE_MS = Number(process.env.BOARD_IDLE_MS) || 10 * 60 * 1000;
+const BOARD_GC_INTERVAL_MS = Number(process.env.BOARD_GC_INTERVAL_MS) || 60000;
+const boardGc = setInterval(() => {
+  const gone = rooms.sweep(Date.now(), BOARD_IDLE_MS);
+  if (gone.length) {
+    console.log(`[gc] 卸载空闲盘面 ${gone.length} 个: ${gone.join(' ')}`);
+  }
+}, BOARD_GC_INTERVAL_MS);
+if (boardGc.unref) boardGc.unref();
 const rooms = new RoomStore({
   dir: DATA_DIR,
   scenes,
@@ -769,8 +845,11 @@ wss.on('connection', (ws, req) => {
 
   const leave = () => {
     if (!room.clients.has(ws)) return;
-    room.clients.delete(ws);
+    // 用 dropConnection 而不是裸的 clients.delete ——
+    // 它同时清掉 seen 基线，否则玩家每刷新一次就漏一条 ~20KB 的记录。
+    room.dropConnection(ws);
     peerCount(room);
+    room.touch();
     room.save();
 
     // 标记离线但**不把人踢出名册** —— 60s 宽限期内刷新能回到原队伍。
@@ -827,6 +906,19 @@ const server = http.createServer(async (req, res) => {
     return res.end('bad request');
   }
 
+  // 健康检查：给编排/监控用（Docker HEALTHCHECK、反代探活）。
+  // 故意做得极轻 —— 它会被频繁调用，不该去碰磁盘。
+  if (urlPath === '/api/health') {
+    return sendJson(res, 200, {
+      ok: true,
+      uptime: Math.round(process.uptime()),
+      rooms: registry.byCode.size,
+      boards: rooms.rooms.size,
+      clients: wss.clients.size,
+      mem: Math.round(process.memoryUsage().heapUsed / 1048576)
+    });
+  }
+
   if (urlPath.startsWith('/api/')) {
     try {
       const handled = await handleRoomApi(req, res, urlPath, url.searchParams);
@@ -858,21 +950,93 @@ const server = http.createServer(async (req, res) => {
       return res.end('404 not found');
     }
 
+    const ext = path.extname(filePath).toLowerCase();
+    const type = MIME[ext] || 'application/octet-stream';
+    // 弱 ETag：mtime + size 足够 —— 内容变了这两个几乎必然都变。
+    // 不用内容哈希，那要读一遍整个文件（贴图 15MB，不值得）。
+    const etag = 'W/"' + st.size.toString(16) + '-' + st.mtimeMs.toString(16) + '"';
+    const immutable = IMMUTABLE.test(urlPath);
+
+    /**
+     * 压缩。
+     *
+     * 文本类压得很凶（scene JSON 省 82%、JS 省 65%），
+     * **webp 不压** —— 它本身已是压缩格式，再 gzip 白费 CPU 还几乎不变小。
+     * 弱服务器上省的是上行带宽，这是最实在的一条优化。
+     */
+    const COMPRESSIBLE = /^\.(html|js|css|json|svg|txt)$/.test(ext);
+    const acceptsGzip = /\bgzip\b/.test(req.headers['accept-encoding'] || '');
+
+    // 304：刷页面时不再重下 321KB 的 JS+场景 JSON。
+    // 这是弱服务器上最划算的一条 —— 重复访问直接变成 0 字节。
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, { ETag: etag, 'Cache-Control': cacheControl(immutable) });
+      return res.end();
+    }
+
     const headers = {
-      'Content-Type': MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
-      'Content-Length': st.size
+      'Content-Type': type,
+      ETag: etag,
+      'Cache-Control': cacheControl(immutable)
     };
-    // 贴图按内容哈希命名，可以放心长缓存（低端机上省掉重复下载）
-    headers['Cache-Control'] = IMMUTABLE.test(urlPath)
-      ? 'public, max-age=31536000, immutable'
-      : 'no-cache, no-store, must-revalidate';
+    if (immutable) headers['Vary'] = 'Accept-Encoding';
 
-    res.writeHead(200, headers);
-    if (req.method === 'HEAD') return res.end();
+    if (req.method === 'HEAD') {
+      headers['Content-Length'] = st.size;
+      res.writeHead(200, headers);
+      return res.end();
+    }
 
-    const stream = fs.createReadStream(filePath);
-    stream.on('error', () => res.destroy());
-    stream.pipe(res);
+    /**
+     * 压缩后的正文**按 ETag 缓存**。
+     *
+     * 不算这一步的话，20 个客户端同时进房就要把同一个 scene JSON
+     * 压 20 遍（一次 ~1.5ms，全是同步 CPU，会阻塞事件循环）——
+     * 而它其实只取决于文件内容，压一次就够了。
+     * 用 ETag 当键：文件一变 ETag 就变，旧缓存自然失效。
+     *
+     * 只给文本类缓存；webp 不压（见上），不进这个表。
+     */
+    if (!COMPRESSIBLE) {
+      // 二进制（贴图）：**流式发**。987 个请求同时来的话，
+      // readFileSync 会把它们全部读进内存再写出去，白白占一份峰值。
+      headers['Content-Length'] = st.size;
+      res.writeHead(200, headers);
+      const stream = fs.createReadStream(filePath);
+      stream.on('error', () => res.destroy());
+      stream.pipe(res);
+      return;
+    }
+
+    const hit = gzCache.get(filePath);
+    if (hit && hit.etag === etag) {
+      res.writeHead(200, Object.assign({}, headers, gzipHeaders(hit.buf, etag)));
+      return res.end(hit.buf);
+    }
+    if (hit) gzCache.delete(filePath);      // ETag 变了，旧缓存作废
+
+    if (!acceptsGzip) {
+      headers['Content-Length'] = st.size;
+      res.writeHead(200, headers);
+      const stream = fs.createReadStream(filePath);
+      stream.on('error', () => res.destroy());
+      stream.pipe(res);
+      return;
+    }
+
+    fs.readFile(filePath, (err2, body) => {
+      if (err2) { res.destroy(); return; }
+      zlib.gzip(body, (err3, gz) => {
+        if (err3) {                          // 压缩失败就退回原文，不影响可用性
+          headers['Content-Length'] = body.length;
+          res.writeHead(200, headers);
+          return res.end(body);
+        }
+        rememberGz(filePath, etag, gz);
+        res.writeHead(200, Object.assign({}, headers, gzipHeaders(gz, etag)));
+        res.end(gz);
+      });
+    });
   });
 });
 
@@ -893,6 +1057,7 @@ server.on('upgrade', (req, socket, head) => {
 server.listen(PORT, HOST, () => {
   const d = scenes.defaultSlug();
   console.log(`web-tts  http://localhost:${PORT}/?room=demo`);
+  console.log(`数据目录: ${DATA_DIR}`);
   console.log(`局域网访问: http://<本机IP>:${PORT}/?room=demo`);
   console.log(`场景: ${scenes.list().length} 个${d ? '，默认 ' + d : '（未找到，先跑 tools/build_assets.py）'}`);
 });
@@ -900,6 +1065,7 @@ server.listen(PORT, HOST, () => {
 function shutdown(sig) {
   console.log(`\n[${sig}] 落盘并退出…`);
   clearInterval(heart);
+  clearInterval(boardGc);
   rooms.flushAll();
   wss.close();
   server.close();
