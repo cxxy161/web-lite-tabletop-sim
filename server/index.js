@@ -24,6 +24,9 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 const { RoomStore } = require('./room');
 const { SceneStore } = require('./scene');
+const {
+  RoomRegistry, normCode, cleanName, cleanRoomName, MAX_PLAYERS, OFFLINE_GRACE_MS
+} = require('./rooms');
 const codec = require('./codec');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -54,6 +57,10 @@ const MIME = {
 const IMMUTABLE = /^\/assets\//;
 
 const scenes = new SceneStore(path.join(PUBLIC_DIR, 'scenes'));
+
+// 房间元数据（谁建的、谁是房主、有谁）与盘面分开存，见 rooms.js 的文件头
+const registry = new RoomRegistry({ dir: DATA_DIR });
+registry.startSweeper(15000);
 const rooms = new RoomStore({
   dir: DATA_DIR,
   scenes,
@@ -93,6 +100,215 @@ function readBody(req, limit) {
 function sanitizeRoom(raw) {
   const s = String(raw || 'demo').replace(/[^\w-]/g, '').slice(0, 32);
   return s || 'demo';
+}
+
+/* ---------- 房间 API ---------- */
+
+// 从请求头取身份。HTTP 是无状态的，每次都要带，
+// **不能**只信 body 里报的 playerId —— 那等于没有权限。
+function ident(req) {
+  return {
+    id: String(req.headers['x-player-id'] || ''),
+    token: String(req.headers['x-player-token'] || '')
+  };
+}
+
+// 鉴权并返回 { room, player }；失败时已写好响应，调用方 return 即可。
+function authed(req, res, code) {
+  const room = registry.get(code);
+  if (!room) {
+    sendJson(res, 404, { error: '房间不存在' });
+    return null;
+  }
+  const me = ident(req);
+  const player = room.auth(me.id, me.token);
+  if (!player) {
+    sendJson(res, 403, { error: '身份无效，请重新加入房间' });
+    return null;
+  }
+  return { room, player };
+}
+
+// 把房间状态广播给房里所有人（含各自的私密字段，如自己的 token）
+function roomState(room, forPlayer) {
+  return {
+    t: 'room',
+    room: room.publicState(),
+    you: forPlayer ? {
+      id: forPlayer.id,
+      name: forPlayer.name,
+      teamId: forPlayer.teamId,
+      owner: forPlayer.owner
+    } : null
+  };
+}
+
+async function handleRoomApi(req, res, urlPath, query) {
+  /* 建房 */
+  if (urlPath === '/api/room/create' && req.method === 'POST') {
+    let payload;
+    try { payload = JSON.parse(await readBody(req, 64 * 1024)); }
+    catch (e) { return sendJson(res, 400, { error: '请求体不是 JSON' }); }
+
+    const made = registry.create({
+      ownerName: cleanName(payload.name, '玩家'),
+      name: payload.roomName
+    });
+    if (!made) return sendJson(res, 503, { error: '房间已满，请稍后再试' });
+
+    // 建房者直接算在线（下一步就连 WS 了）
+    made.room.setOnline(made.player.id, true);
+    console.log(`[room] 新建 ${made.room.code} "${made.room.name}" 房主 ${made.player.name}`);
+
+    return sendJson(res, 200, {
+      ok: true,
+      code: made.room.code,
+      playerId: made.player.id,
+      token: made.player.token,
+      room: made.room.publicState()
+    });
+  }
+
+  /* 加入 */
+  if (urlPath === '/api/room/join' && req.method === 'POST') {
+    let payload;
+    try { payload = JSON.parse(await readBody(req, 64 * 1024)); }
+    catch (e) { return sendJson(res, 400, { error: '请求体不是 JSON' }); }
+
+    const code = normCode(payload.code);
+    const room = registry.get(code);
+    if (!room) return sendJson(res, 404, { error: '邀请码无效' });
+
+    const existing = payload.playerId && payload.token
+      ? room.auth(payload.playerId, payload.token) : null;
+
+    // 老玩家带对了凭证 -> 直接复用身份（刷新页面走这条）
+    if (existing) {
+      room.setOnline(existing.id, true);
+      if (payload.name) room.setName(existing.id, payload.name);
+      return sendJson(res, 200, {
+        ok: true, code: room.code, reused: true,
+        playerId: existing.id, token: existing.token,
+        room: room.publicState()
+      });
+    }
+
+    const p = room.addPlayer(payload.name);
+    if (!p) return sendJson(res, 503, { error: '房间人数已满（' + MAX_PLAYERS + ' 人）' });
+    room.setOnline(p.id, true);
+    console.log(`[room] ${room.code} + ${p.name}`);
+
+    return sendJson(res, 200, {
+      ok: true, code: room.code, reused: false,
+      playerId: p.id, token: p.token,
+      room: room.publicState()
+    });
+  }
+
+  /* 查房间：不鉴权，只用来让「加入」界面先确认邀请码有效、显示房名。
+     刻意**不返回玩家列表与 token** —— 还没证明身份的人不该看到房里有什么人。 */
+  if (urlPath === '/api/room/info') {
+    const room = registry.get(normCode(query.get('code')));
+    if (!room) return sendJson(res, 404, { error: '邀请码无效' });
+    return sendJson(res, 200, {
+      ok: true,
+      code: room.code,
+      name: room.name,
+      playerCount: room.players.size,
+      maxPlayers: MAX_PLAYERS,
+      teams: room.teams
+    });
+  }
+
+  /* 改队伍：房主可改任何人；普通人只能改自己 */
+  if (urlPath === '/api/room/team' && req.method === 'POST') {
+    let payload;
+    try { payload = JSON.parse(await readBody(req, 64 * 1024)); }
+    catch (e) { return sendJson(res, 400, { error: '请求体不是 JSON' }); }
+
+    const a = authed(req, res, normCode(payload.code));
+    if (!a) return;
+
+    const target = String(payload.targetId || a.player.id);
+    // **权限校验**：不是房主就只能改自己。这一条是硬的 ——
+    // 前端把按钮藏起来只是体验，真正拦住越权的是这里。
+    if (target !== a.player.id && !a.room.isOwner(a.player.id)) {
+      return sendJson(res, 403, { error: '只有房主能调整别人的队伍' });
+    }
+    if (!a.room.get(target)) return sendJson(res, 404, { error: '玩家不在房间里' });
+
+    const teamId = payload.teamId == null ? null : String(payload.teamId);
+    if (!a.room.setTeam(target, teamId)) {
+      return sendJson(res, 400, { error: '队伍不存在' });
+    }
+
+    broadcastRoomState(a.room);
+    return sendJson(res, 200, { ok: true, room: a.room.publicState() });
+  }
+
+  /* 踢人：仅房主。房主不能踢自己。 */
+  if (urlPath === '/api/room/kick' && req.method === 'POST') {
+    let payload;
+    try { payload = JSON.parse(await readBody(req, 64 * 1024)); }
+    catch (e) { return sendJson(res, 400, { error: '请求体不是 JSON' }); }
+
+    const a = authed(req, res, normCode(payload.code));
+    if (!a) return;
+
+    if (!a.room.isOwner(a.player.id)) {
+      return sendJson(res, 403, { error: '只有房主能踢人' });
+    }
+
+    const target = String(payload.targetId || '');
+    if (target === a.player.id) {
+      return sendJson(res, 400, { error: '房主不能踢自己' });
+    }
+
+    const victim = a.room.get(target);
+    if (!victim) return sendJson(res, 404, { error: '玩家不在房间里' });
+
+    a.room.removePlayer(target);
+
+    // 把被踢的人从房间里断开。他的 token 已随名册一起删掉，
+    // 所以即便他拿着旧凭证重连，也会在 WS 握手时被拒。
+    const room = rooms.get(a.room.code);
+    if (room) {
+      room.clients.forEach((c) => {
+        if (c.playerId !== target) return;
+        send(c, { t: 'fatal', error: '你已被房主移出房间' });
+        try { c.close(4003, 'kicked'); } catch (_) {}
+      });
+    }
+
+    broadcastRoomState(a.room);
+    console.log(`[room] ${a.room.code} 踢出 ${victim.name}`);
+    return sendJson(res, 200, { ok: true, room: a.room.publicState() });
+  }
+
+  /* 改名 */
+  if (urlPath === '/api/room/rename' && req.method === 'POST') {
+    let payload;
+    try { payload = JSON.parse(await readBody(req, 64 * 1024)); }
+    catch (e) { return sendJson(res, 400, { error: '请求体不是 JSON' }); }
+
+    const a = authed(req, res, normCode(payload.code));
+    if (!a) return;
+
+    if (payload.roomName != null) {
+      if (!a.room.isOwner(a.player.id)) {
+        return sendJson(res, 403, { error: '只有房主能改房间名' });
+      }
+      a.room.name = cleanRoomName(payload.roomName, a.room.name);
+    }
+    if (payload.name != null) {
+      a.room.setName(a.player.id, payload.name);
+    }
+
+    broadcastRoomState(a.room);
+    return sendJson(res, 200, { ok: true, room: a.room.publicState() });
+  }
+
+  return false;   // 不是房间 API
 }
 
 /* ---------- 存档 API ---------- */
@@ -225,29 +441,92 @@ function broadcastRoom(room, obj) {
   });
 }
 
+/**
+ * 把房间状态广播给房内每个连接。
+ *
+ * 必须**逐连接**发，不能像 broadcast 那样共用一份字符串 ——
+ * 每个人的 `you` 不同（自己的 id/队伍/房主位）。
+ * 老玩家带凭证重连时，也靠这条消息恢复「我是谁」。
+ */
+function broadcastRoomState(meta) {
+  if (!meta) return;
+  const room = rooms.get(meta.code);
+  if (!room) return;
+
+  const base = meta.publicState();
+  room.clients.forEach((c) => {
+    if (c.readyState !== 1) return;
+    const p = meta.get(c.playerId);
+    send(c, {
+      t: 'room',
+      room: base,
+      you: p ? {
+        id: p.id, name: p.name, teamId: p.teamId, owner: p.owner
+      } : null
+    });
+  });
+}
+
 function peerCount(room) {
   broadcast(room, { t: 'peer', n: room.clients.size });
 }
 
 wss.on('connection', (ws, req) => {
-  let roomId = 'demo';
+  let roomId = '';
   let name = '';
+  let pid = '';
+  let token = '';
+  let code = '';
   try {
     const q = new URL(req.url, 'http://x').searchParams;
-    roomId = sanitizeRoom(q.get('room'));
+    code = normCode(q.get('room'));
     name = String(q.get('name') || '').slice(0, 24);
+    pid = String(q.get('pid') || '');
+    token = String(q.get('token') || '');
   } catch (_) {}
+
+  // 必须是已注册的房间，而且凭证要对。
+  //
+  // 这里**不能**回落到「随便建一个房间」：以前 rooms.get() 是随手就建，
+  // 于是任何知道房间名的人都能开一个新房间。现在房间必须先由
+  // /api/room/create 建出来，WS 只认已存在的。
+  const meta = registry.get(code);
+  if (!meta) {
+    send(ws, { t: 'fatal', error: '房间不存在，请从主页重新进入' });
+    try { ws.close(4004, 'no room'); } catch (_) {}
+    return;
+  }
+
+  const player = meta.auth(pid, token);
+  if (!player) {
+    // 身份无效（被踢、换了设备、清过缓存）-> 明确告知并断开，
+    // 让前端退回主页重新加入，而不是当匿名用户混进来。
+    send(ws, { t: 'fatal', error: '身份已失效，请重新加入房间' });
+    try { ws.close(4003, 'bad auth'); } catch (_) {}
+    return;
+  }
+
+  roomId = code;
+  name = player.name;
 
   const room = rooms.get(roomId);
 
   ws.isAlive = true;
   ws.roomId = roomId;
   ws.name = name;
+  ws.playerId = player.id;
+  ws.code = code;
   room.clients.add(ws);
+
+  meta.setOnline(player.id, true);
 
   // 进场即全量快照。重连也走这条路 —— 所以这版不需要增量补发/重放机制。
   send(ws, Object.assign({ t: 'init', room: roomId }, room.snapshot()));
+  // 房间状态（玩家列表 / 队伍）单独给：它是元数据，不是盘面
+  send(ws, roomState(meta, player));
   peerCount(room);
+  // 别人也要看到「谁来了」
+  broadcastRoomState(meta);
 
   console.log(`[ws] + ${roomId} "${name}" -> ${room.clients.size} 人 (${room.pieces.size} 枚)`);
 
@@ -271,6 +550,21 @@ wss.on('connection', (ws, req) => {
     room.clients.delete(ws);
     peerCount(room);
     room.save();
+
+    // 标记离线但**不把人踢出名册** —— 60s 宽限期内刷新能回到原队伍。
+    // 真正移除由 registry 的 sweeper 到期处理。
+    const m = registry.get(code);
+    if (m && m.get(player.id)) {
+      // 同一个人可能开了多个标签页：还有别的连接就不算离线
+      let stillHere = false;
+      room.clients.forEach((c) => { if (c.playerId === player.id) stillHere = true; });
+      if (!stillHere) {
+        m.setOnline(player.id, false);
+        broadcastRoomState(m);
+        console.log(`[ws]   ${player.name} 离线（${OFFLINE_GRACE_MS / 1000}s 内可回来）`);
+      }
+    }
+
     console.log(`[ws] - ${roomId} "${name}" -> ${room.clients.size} 人`);
   };
 
@@ -312,6 +606,8 @@ const server = http.createServer(async (req, res) => {
 
   if (urlPath.startsWith('/api/')) {
     try {
+      const handled = await handleRoomApi(req, res, urlPath, url.searchParams);
+      if (handled !== false) return handled;
       return await handleApi(req, res, urlPath, url.searchParams);
     } catch (e) {
       console.error('[api] 未捕获异常', e);

@@ -11,7 +11,8 @@
   function create(opts) {
     var url = opts.url;
     var ws = null;
-    var closed = false;
+    var closed = false;         // 调用方主动关的
+    var fatallyClosed = false;  // 服务端拒绝（身份失效 / 房间不存在），不再重试
     var backoff = 500;
     var outbox = [];
 
@@ -24,6 +25,8 @@
       onInit: null,
       onOp: null,
       onPeer: null,
+      onRoom: null,       // 房间元数据（玩家列表 / 队伍）
+      onFatal: null,      // 服务端拒绝连接（身份失效 / 房间不存在）
 
       send: function (obj) {
         var s = JSON.stringify(obj);
@@ -44,6 +47,8 @@
     if (opts.onInit) api.onInit = opts.onInit;
     if (opts.onOp) api.onOp = opts.onOp;
     if (opts.onPeer) api.onPeer = opts.onPeer;
+    if (opts.onRoom) api.onRoom = opts.onRoom;
+    if (opts.onFatal) api.onFatal = opts.onFatal;
 
     function open() {
       var sock;
@@ -64,14 +69,19 @@
       sock.onmessage = function (e) {
         var m;
         try { m = JSON.parse(e.data); } catch (_) { return; }
+        if (m.t === 'fatal') fatallyClosed = true;
         if (m.t === 'init' && api.onInit) api.onInit(m);
         else if (m.t === 'op' && api.onOp) api.onOp(m);
         else if (m.t === 'peer' && api.onPeer) api.onPeer(m.n);
+        else if (m.t === 'room' && api.onRoom) api.onRoom(m);
+        else if (m.t === 'fatal' && api.onFatal) api.onFatal(m);
       };
 
       sock.onclose = function () {
         if (api.onClose) api.onClose();
-        if (!closed) retry();
+        // fatal（身份失效 / 房间没了）之后重连也连不上，
+        // 继续重试只会无限刷请求。交给上层把用户送回主页。
+        if (!closed && !fatallyClosed) retry();
       };
 
       sock.onerror = function () {

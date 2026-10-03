@@ -2,123 +2,53 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#f5f1e8">
-<title>web-tts · 大洋落日</title>
+<title>web-tts · 轻量级 2D 虚拟桌游</title>
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="home">
 
-<!-- 双层 Canvas：bg = 原点准星，fg = 棋子层按需重绘 -->
-<canvas id="bg"></canvas>
-<canvas id="fg"></canvas>
+<main id="home">
 
-<!-- 左上角统一面板：状态 + 工具 + 设置 -->
-<div id="panel">
+  <h1>轻量级 2D 虚拟桌游</h1>
+  <p class="home-sub">自建自托管 · 免规则判定 · 老旧手机也能跑</p>
 
-  <div id="hud">
-    <span id="hud-room">demo</span>
-    <span class="sep">·</span>
-    <span id="hud-conn" class="off">连接中</span>
-    <span class="sep">·</span>
-    <span id="hud-peers">1 人</span>
-    <span class="sep">·</span>
-    <span id="hud-scene">—</span>
-    <span class="sep">·</span>
-    <span id="hud-seq">seq 0</span>
-    <span class="sep">·</span>
-    <span id="hud-sel">未选中</span>
-    <span class="sep">·</span>
-    <span id="hud-tex">贴图 0/0</span>
-    <span class="sep">·</span>
-    <span id="hud-pos">x 0.0  y 0.0</span>
+  <label class="field">
+    <span>昵称</span>
+    <input id="nick" type="text" maxlength="20" placeholder="给自己起个名字" autocomplete="nickname">
+  </label>
+
+  <div class="home-split">
+
+    <section class="card">
+      <h2>创建房间</h2>
+      <p class="card-hint">建成后得到一个 6 位邀请码，发给朋友。</p>
+      <label class="field">
+        <span>房间名<span class="opt">（可留空）</span></span>
+        <input id="roomname" type="text" maxlength="24" placeholder="例如：周三夜场">
+      </label>
+      <button id="btn-create" class="primary" type="button">创建并进入</button>
+    </section>
+
+    <section class="card">
+      <h2>加入房间</h2>
+      <p class="card-hint">输入朋友给你的邀请码。</p>
+      <label class="field">
+        <span>邀请码</span>
+        <input id="code" type="text" maxlength="12" placeholder="例如 XK3F9Q"
+               autocapitalize="characters" autocomplete="off" spellcheck="false">
+      </label>
+      <button id="btn-join" class="primary" type="button">加入</button>
+    </section>
+
   </div>
 
-  <div id="tools">
-    <button id="btn-marquee" type="button">框选</button>
-    <button id="btn-items" type="button">物品</button>
-    <button id="btn-origin" type="button">原点</button>
-    <button id="btn-settings" type="button">设置</button>
-  </div>
+  <p id="home-msg" class="home-msg"></p>
 
-  <!-- 物品：从这里把骰子/标记拖到桌面上 -->
-  <div id="items" hidden>
-    <div class="set-row">
-      <span class="set-label">骰子</span>
-      <div id="item-dice" class="item-row"></div>
-    </div>
-    <div class="set-row">
-      <span class="set-label">标记</span>
-      <div id="item-tokens" class="item-row"></div>
-    </div>
+</main>
 
-    <div class="set-row">
-      <span class="set-label">颜色</span>
-      <div id="item-colors" class="color-row"></div>
-    </div>
-    <div class="set-note" id="items-note">选好颜色后，把上面的物品<b>拖到桌面</b>即可放下；直接点也能放到视图中心。</div>
-  </div>
-
-  <div id="settings" hidden>
-    <div class="set-row">
-      <span class="set-label">画质</span>
-      <div id="lod-levels" class="set-seg"></div>
-    </div>
-    <div id="lod-note" class="set-note"></div>
-
-    <div class="set-row">
-      <span class="set-label">盘面方向</span>
-      <div id="map-modes" class="set-seg"></div>
-    </div>
-    <div id="map-note" class="set-note"></div>
-
-    <div class="set-row">
-      <span class="set-label">存档</span>
-      <div class="set-seg">
-        <button id="btn-saves" type="button">导出</button>
-        <button id="btn-load" type="button">导入</button>
-      </div>
-    </div>
-    <div class="set-note">导出得到 base64 文本，复制走即可；导入把文本粘回来。<b>不写文件</b>。</div>
-  </div>
-
-</div>
-
-<!-- 物品拖拽时的跟随幽灵。必须是 canvas：paintGhost 要在上面画缩略图 -->
-<canvas id="ghost" width="64" height="44" hidden></canvas>
-
-<!-- 棋子菜单（桌面右键 / 手机长按） -->
-<div id="menu" hidden></div>
-
-<div id="fatal" hidden></div>
-
-<div id="saves" hidden>
-  <div class="saves-head">
-    <b>存档 / 读档</b>
-    <button id="btn-close" type="button">关闭</button>
-  </div>
-  <p class="saves-hint">
-    导出得到一串 base64 文本，复制走即可；读档把文本粘回来点「导入」。
-    <b>不写文件</b>，纯剪贴板传递。
-  </p>
-  <textarea id="saves-text" spellcheck="false" placeholder="点「导出」生成存档，或在此粘贴存档后点「导入」"></textarea>
-  <div class="saves-actions">
-    <button id="btn-export" type="button">导出</button>
-    <button id="btn-import" type="button">导入</button>
-    <button id="btn-copy" type="button">复制</button>
-    <span id="saves-msg"></span>
-  </div>
-</div>
-
-<script src="board.js"></script>
-<script src="texture.js"></script>
-<script src="net.js"></script>
-<script src="color.js"></script>
-<script src="settings.js"></script>
-<script src="dice.js"></script>
-<script src="token.js"></script>
-<script src="menu.js"></script>
-<script src="saves.js"></script>
-<script src="app.js"></script>
+<script src="identity.js"></script>
+<script src="home.js"></script>
 </body>
 </html>

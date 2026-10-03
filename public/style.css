@@ -304,3 +304,179 @@ canvas{display:block}
   box-shadow:0 10px 34px rgba(120,60,50,.18);
 }
 #fatal[hidden]{display:none}
+
+/* ---------- 主页 ---------- */
+
+body.home{
+  overflow:auto;                 /* 主页要能滚（小屏手机上内容会超一屏） */
+  display:flex;align-items:center;justify-content:center;
+  padding:24px 16px;
+  min-height:100%;
+}
+
+#home{
+  width:min(680px,100%);
+  display:flex;flex-direction:column;gap:14px;
+}
+
+#home h1{
+  margin:0;font-size:22px;font-weight:600;
+  letter-spacing:.02em;
+}
+.home-sub{margin:0;font-size:13px;color:var(--dim)}
+
+.home-split{
+  display:grid;gap:12px;
+  grid-template-columns:1fr 1fr;
+}
+@media (max-width:560px){
+  /* 手机上并排会挤成两条窄柱，改上下堆叠 */
+  .home-split{grid-template-columns:1fr}
+}
+
+.card{
+  display:flex;flex-direction:column;gap:10px;
+  padding:14px;
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:10px;
+}
+.card h2{margin:0;font-size:14px;font-weight:600}
+.card-hint{margin:0;font-size:12px;color:var(--dim);line-height:1.5}
+
+.field{display:flex;flex-direction:column;gap:5px}
+.field > span{font-size:12px;color:var(--dim)}
+.field .opt{opacity:.65}
+.field input{
+  width:100%;box-sizing:border-box;
+  padding:9px 11px;
+  font:inherit;font-size:14px;
+  color:var(--fg);
+  background:#fbf9f4;
+  border:1px solid var(--line-2);
+  border-radius:7px;
+}
+.field input:focus{outline:none;border-color:var(--accent)}
+
+/* 邀请码用等宽 + 加宽字距，好念也好核对 */
+#code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:17px;letter-spacing:.14em;text-transform:uppercase;
+}
+
+button.primary{
+  appearance:none;
+  padding:10px 14px;
+  font:inherit;font-size:14px;font-weight:600;
+  color:#fffdf8;
+  background:var(--accent);
+  border:1px solid var(--accent);
+  border-radius:7px;
+  cursor:pointer;
+}
+button.primary:hover{background:#b5642f}
+button.primary:active{background:#a55927}
+button.primary:disabled{opacity:.55;cursor:default}
+
+.home-msg{
+  margin:0;min-height:1.2em;
+  font-size:13px;color:var(--dim);
+}
+.home-msg.err{color:#b4453a}
+.home-msg.ok{color:var(--ok)}
+
+/* ---------- 右上角：玩家列表 ---------- */
+
+#players{
+  position:fixed;z-index:2;
+  top:8px;right:8px;
+  display:flex;flex-direction:column;gap:6px;
+  min-width:150px;max-width:min(260px,calc(100vw - 16px));
+  max-height:calc(100vh - 16px);
+  padding:8px;
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:9px;
+  box-shadow:0 2px 10px rgba(90,78,60,.10);
+}
+#players[hidden]{display:none}
+
+.pl-head{
+  display:flex;align-items:baseline;gap:6px;
+  font-size:12px;color:var(--fg);
+  white-space:nowrap;overflow:hidden;
+}
+.pl-head b{font-weight:600;overflow:hidden;text-overflow:ellipsis}
+.pl-code{
+  margin-left:auto;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:12px;letter-spacing:.10em;
+  color:var(--accent);cursor:pointer;
+}
+.pl-code:hover{text-decoration:underline}
+
+.pl-list{
+  display:flex;flex-direction:column;gap:1px;
+  overflow-y:auto;
+  max-height:44vh;
+  padding-top:4px;
+  border-top:1px solid var(--line);
+}
+
+/* 一行玩家：圆点 + 名字 + 队伍标签 + 房主/离线标记 */
+.pl-row{
+  display:flex;align-items:center;gap:6px;
+  padding:3px 4px;border-radius:5px;
+  font-size:12px;color:var(--fg);
+  white-space:nowrap;
+}
+.pl-row.me{background:#f3ecdf}
+.pl-dot{
+  width:7px;height:7px;border-radius:50%;
+  background:var(--ok);flex:none;
+}
+.pl-row.off .pl-dot{background:#c4bcab}
+.pl-row.off .pl-name{color:var(--dim)}
+.pl-name{overflow:hidden;text-overflow:ellipsis}
+.pl-tag{
+  margin-left:auto;flex:none;
+  font-size:10px;padding:1px 5px;border-radius:4px;
+  background:#e8e0d0;color:var(--dim);
+}
+.pl-tag.owner{background:#efe0d4;color:var(--accent)}
+.pl-tag.red{background:#f3dedb;color:#8d3f34}
+.pl-tag.blue{background:#dde6f2;color:#33507a}
+
+.pl-team{
+  display:flex;align-items:center;gap:6px;
+  padding-top:6px;
+  border-top:1px solid var(--line);
+}
+.pl-team .set-label{font-size:11px}
+
+/* 房主操作（点某一行展开） */
+.pl-act{display:flex;gap:4px;margin-left:auto;flex:none}
+.pl-act button{
+  appearance:none;border:1px solid var(--line-2);background:#fbf9f4;
+  color:var(--dim);padding:1px 5px;border-radius:4px;
+  font:inherit;font-size:10px;cursor:pointer;
+}
+.pl-act button:hover{background:#f0e9db;color:var(--fg)}
+.pl-act button.kick:hover{background:#f7e8e4;color:#b4453a}
+
+/* HUD 里的队伍标签 */
+#hud-team{font-weight:600}
+#hud-team.team-red{color:#b4453a}
+#hud-team.team-blue{color:#3a7bd5}
+
+/* 致命提示里的操作按钮 */
+.fatal-act{
+  display:block;margin-top:12px;
+  appearance:none;
+  padding:7px 14px;
+  font:inherit;font-size:13px;
+  color:#fffdf8;background:#b4453a;
+  border:0;border-radius:6px;
+  cursor:pointer;
+}
+.fatal-act:hover{background:#9c3a30}

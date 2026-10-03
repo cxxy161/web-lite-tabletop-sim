@@ -11,7 +11,9 @@
   'use strict';
 
   var qs = new URLSearchParams(global.location.search);
-  var ROOM = (qs.get('room') || 'demo').replace(/[^\w-]/g, '').slice(0, 32) || 'demo';
+  // 房间号就是邀请码（见 server/rooms.js）。这里必须和 app.js 用同一种归一，
+  // 否则会出现「棋盘连的是 A、存档导出的是 B」这种诡异的不同步。
+  var ROOM = (qs.get('room') || '').toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 8);
 
   var dlg = document.getElementById('saves');
   var ta = document.getElementById('saves-text');

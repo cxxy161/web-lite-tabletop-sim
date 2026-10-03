@@ -39,8 +39,21 @@
   var lodThreshold = 18;
 
   var qs = new URLSearchParams(global.location.search);
-  var ROOM = (qs.get('room') || 'demo').replace(/[^\w-]/g, '').slice(0, 32) || 'demo';
-  var NAME = (qs.get('name') || '').slice(0, 24);
+
+  // 房间页只接受邀请码。房间号就是邀请码本身（见 rooms.js），
+  // 所以这里沿用原来的 ?room= 参数名，app.js/saves.js 的既有逻辑不用改。
+  var ROOM = (qs.get('room') || '').toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 8);
+
+  // 没有邀请码就直接退回主页 —— 房间页没有「默认房间」这回事了。
+  // 以前会静默落到 demo，那样两个人都输错码时会莫名进到同一个房间。
+  if (!ROOM) {
+    global.location.replace('index.html');
+    return;
+  }
+
+  // 昵称与身份都来自 localStorage（主页写入）
+  var NAME = global.Identity ? global.Identity.getName() : '';
+  var ME = global.Identity ? global.Identity.get(ROOM) : null;
 
   /* ---------- 状态 ---------- */
 
@@ -127,6 +140,7 @@
   var elHudScene = document.getElementById('hud-scene');
   var elTex = document.getElementById('hud-tex');
   var elFatal = document.getElementById('fatal');
+  var elHudTeam = document.getElementById('hud-team');
 
   elHudRoom.textContent = ROOM;
 
@@ -770,13 +784,28 @@
 
   // 致命错误提示：格式不匹配这类问题必须让人一眼看到，
   // 而不是留一张空白画布让人猜。
-  function showFatal(text) {
+  // 致命提示。
+  //
+  // fatal 有两种来源，处理方式不同：
+  //   1) 格式不匹配（旧服务进程）：只是提示，可以刷新重试
+  //   2) 服务端拒绝连接（身份失效 / 房间没了）：必须回主页，
+  //      因为再怎么刷新这个房间页都进不去
+  function showFatal(text, backHome) {
     if (elFatal) {
       elFatal.hidden = false;
       elFatal.textContent = text;
+
+      if (backHome) {
+        var a = document.createElement('button');
+        a.type = 'button';
+        a.className = 'fatal-act';
+        a.textContent = '返回主页';
+        a.addEventListener('click', function () { global.location.href = 'index.html'; });
+        elFatal.appendChild(a);
+      }
     }
     if (elHudConn) {
-      elHudConn.textContent = '格式不匹配';
+      elHudConn.textContent = backHome ? '已被拒绝' : '格式不匹配';
       elHudConn.className = 'off';
     }
   }
@@ -807,6 +836,7 @@
   var net = global.Net({
     url: (location.protocol === 'https:' ? 'wss://' : 'ws://') +
          location.host + '/ws?room=' + encodeURIComponent(ROOM) +
+         (ME ? '&pid=' + encodeURIComponent(ME.id) + '&token=' + encodeURIComponent(ME.token) : '') +
          (NAME ? '&name=' + encodeURIComponent(NAME) : ''),
 
     onOpen: function () {
@@ -888,6 +918,25 @@
 
     onPeer: function (n) {
       elHudPeers.textContent = n + ' 人';
+    },
+
+    // 房间元数据（玩家列表 / 队伍）交给 room.js 渲染，
+    // 这里只把「我的队伍」反映到 HUD 上。
+    onRoom: function (m) {
+      if (global.RoomUI) global.RoomUI.update(m);
+      var you = m.you || {};
+      var t = null;
+      (m.room.teams || []).forEach(function (x) { if (x.id === you.teamId) t = x; });
+      if (elHudTeam) {
+        elHudTeam.textContent = t ? t.name : '旁观';
+        elHudTeam.className = t ? ('team-' + t.id) : '';
+      }
+    },
+
+    // 服务端明确拒绝（身份失效 / 房间不存在）—— 重连也没用，
+    // 直接回主页让用户重新加入，而不是对着一个连不上的页面发呆。
+    onFatal: function (m) {
+      showFatal((m && m.error) || '连接被拒绝', true);
     }
   });
 
