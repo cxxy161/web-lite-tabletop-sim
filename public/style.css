@@ -480,3 +480,48 @@ button.primary:disabled{opacity:.55;cursor:default}
   cursor:pointer;
 }
 .fatal-act:hover{background:#9c3a30}
+
+/* ---------- 左下角：消息流 ---------- */
+
+#log{
+  position:fixed;z-index:2;
+  left:8px;bottom:calc(8px + env(safe-area-inset-bottom,0px));
+  display:flex;flex-direction:column;justify-content:flex-end;gap:3px;
+  max-width:min(360px,calc(100vw - 16px));
+  pointer-events:auto;
+}
+#log[hidden]{display:none}
+
+.log-row{
+  padding:5px 10px;
+  font-size:12px;line-height:1.4;
+  color:var(--fg);
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-left:3px solid var(--line-2);
+  border-radius:6px;
+  box-shadow:0 1px 4px rgba(90,78,60,.08);
+
+  /* 入场：从下方略微滑入。高度动画会让整个列表跳动，
+     所以只动 transform / opacity。 */
+  opacity:0;
+  transform:translateY(6px);
+  transition:opacity .22s ease,transform .22s ease;
+}
+.log-row.in{opacity:1;transform:translateY(0)}
+.log-row.out{opacity:0;transform:translateY(-4px)}
+
+/* 按事件类型给左边一道色 */
+.log-row.join{border-left-color:var(--ok)}
+.log-row.leave{border-left-color:var(--line-2);color:var(--dim)}
+.log-row.team{border-left-color:var(--accent)}
+.log-row.kick{border-left-color:#b4453a;color:#8d3a30}
+.log-row.warn{border-left-color:var(--warn)}
+
+.log-text{word-break:break-word}
+
+/* 手机：消息流别占太多宽度，缩短存活条数由 JS 的 MAX_ROWS 控制 */
+@media (max-width:560px){
+  #log{max-width:calc(100vw - 16px)}
+  .log-row{font-size:11px;padding:4px 8px}
+}

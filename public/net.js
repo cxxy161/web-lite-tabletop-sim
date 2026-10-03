@@ -26,6 +26,7 @@
       onOp: null,
       onPeer: null,
       onRoom: null,       // 房间元数据（玩家列表 / 队伍）
+      onLog: null,        // 消息流（谁进来/离开/换队/被踢）
       onFatal: null,      // 服务端拒绝连接（身份失效 / 房间不存在）
 
       send: function (obj) {
@@ -48,6 +49,7 @@
     if (opts.onOp) api.onOp = opts.onOp;
     if (opts.onPeer) api.onPeer = opts.onPeer;
     if (opts.onRoom) api.onRoom = opts.onRoom;
+    if (opts.onLog) api.onLog = opts.onLog;
     if (opts.onFatal) api.onFatal = opts.onFatal;
 
     function open() {
@@ -74,6 +76,7 @@
         else if (m.t === 'op' && api.onOp) api.onOp(m);
         else if (m.t === 'peer' && api.onPeer) api.onPeer(m.n);
         else if (m.t === 'room' && api.onRoom) api.onRoom(m);
+        else if (m.t === 'log' && api.onLog) api.onLog(m);
         else if (m.t === 'fatal' && api.onFatal) api.onFatal(m);
       };
 

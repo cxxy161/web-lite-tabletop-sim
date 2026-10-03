@@ -238,8 +238,19 @@ async function handleRoomApi(req, res, urlPath, query) {
     if (!a.room.get(target)) return sendJson(res, 404, { error: '玩家不在房间里' });
 
     const teamId = payload.teamId == null ? null : String(payload.teamId);
+    const before = (a.room.get(target) || {}).teamId || null;
     if (!a.room.setTeam(target, teamId)) {
       return sendJson(res, 400, { error: '队伍不存在' });
+    }
+
+    if (before !== teamId) {
+      const who = a.room.get(target).name;
+      const tname = teamId
+        ? (a.room.teams.find((t) => t.id === teamId) || {}).name || teamId
+        : '旁观';
+      // 自己改自己 vs 房主分配，提示语要能区分
+      const byOther = target !== a.player.id;
+      emit(a.room, who + (byOther ? ' 被安排到 ' : ' 加入了 ') + tname, 'team');
     }
 
     broadcastRoomState(a.room);
@@ -280,6 +291,7 @@ async function handleRoomApi(req, res, urlPath, query) {
       });
     }
 
+    emit(a.room, victim.name + ' 被房主移出房间', 'kick');
     broadcastRoomState(a.room);
     console.log(`[room] ${a.room.code} 踢出 ${victim.name}`);
     return sendJson(res, 200, { ok: true, room: a.room.publicState() });
@@ -467,6 +479,25 @@ function broadcastRoomState(meta) {
   });
 }
 
+/**
+ * 消息流广播（左下角提示）。
+ *
+ * 只发给**当前在线的人**，不做历史持久化 —— 新进来的人看不到
+ * 之前发生了什么。这是明确的取舍：省掉一份存储与淘汰逻辑，
+ * 代价是「中途加入的人不知道刚才有人被踢」。
+ *
+ * kind 用来选颜色/图标：info | join | leave | team | kick | warn
+ */
+function emit(meta, text, kind) {
+  if (!meta) return;
+  const room = rooms.get(meta.code);
+  if (!room) return;
+  const msg = { t: 'log', text: text, kind: kind || 'info', at: Date.now() };
+  room.clients.forEach((c) => {
+    if (c.readyState === 1) send(c, msg);
+  });
+}
+
 function peerCount(room) {
   broadcast(room, { t: 'peer', n: room.clients.size });
 }
@@ -527,6 +558,7 @@ wss.on('connection', (ws, req) => {
   peerCount(room);
   // 别人也要看到「谁来了」
   broadcastRoomState(meta);
+  emit(meta, player.name + ' 进入了房间', 'join');
 
   console.log(`[ws] + ${roomId} "${name}" -> ${room.clients.size} 人 (${room.pieces.size} 枚)`);
 
@@ -561,6 +593,7 @@ wss.on('connection', (ws, req) => {
       if (!stillHere) {
         m.setOnline(player.id, false);
         broadcastRoomState(m);
+        emit(m, player.name + ' 离开了房间', 'leave');
         console.log(`[ws]   ${player.name} 离线（${OFFLINE_GRACE_MS / 1000}s 内可回来）`);
       }
     }

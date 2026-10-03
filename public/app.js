@@ -933,6 +933,11 @@
       }
     },
 
+    // 左下角消息流。服务端只发给在场的人，不存历史。
+    onLog: function (m) {
+      if (global.Log && m && m.text) global.Log.add(m.text, m.kind);
+    },
+
     // 服务端明确拒绝（身份失效 / 房间不存在）—— 重连也没用，
     // 直接回主页让用户重新加入，而不是对着一个连不上的页面发呆。
     onFatal: function (m) {
