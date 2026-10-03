@@ -24,6 +24,7 @@ html,body{
 
 canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
 #bg{pointer-events:none}
+/* 无限地图上默认手势就是平移，所以常态就是 grab */
 #fg{touch-action:none;cursor:grab}
 #fg.grabbing{cursor:grabbing}
 

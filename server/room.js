@@ -6,7 +6,10 @@
  *   2. 维护权威状态副本
  *   3. 5 秒防抖、原子写盘
  *
- * 刻意不做：任何规则/合法性判定。这是纯沙盒桌面（README 的定位）。
+ * 刻意不做：任何规则/合法性判定。这是纯沙盒桌面（readme 的定位）。
+ *
+ * 坐标：棋子位置是任意浮点世界坐标（棋子的中心），地图无边界。
+ * 服务端**不**对坐标做任何范围钳制 —— 钳制就等于给无限地图偷偷加了边界。
  *
  * 关于「seq 为什么不能省」：如果让客户端自己编号，两个客户端并发操作时
  * 到达顺序不同，两端最终画面就会撕裂。服务端串行编号后广播，
@@ -23,9 +26,6 @@ const SAVE_DEBOUNCE_MS = 5000;
 class Room {
   constructor(id, opts) {
     this.id = id;
-    this.cell = (opts && opts.cell) || 64;
-    this.cols = (opts && opts.cols) || 12;
-    this.rows = (opts && opts.rows) || 20;
 
     this.seq = 0;
     this.clients = new Set();
@@ -43,21 +43,30 @@ class Room {
 
   /* ---------- 初始布局 ---------- */
   //
-  // 军棋式布局：上下两块「本方阵地」，中间留一条空地带（前线）。
-  // 12 列 * 9 行 * 2 = 216 枚，满足 README 的 200+ 棋子压力；
-  // 中间 2 行（24 格）留空 —— 这点很重要，全填满的话
-  // 「点击空格落子」这条交互就永远走不到。
-  // 所以 rows 必须是 9 + 2 + 9 = 20，不能是 18。
+  // 无限地图上没有「盘面」这回事，所以布局是以世界原点为中心的两块阵地，
+  // 坐标可正可负（这正是无边界地图该有的样子）。
+  // 12 列 * 9 行 * 2 = 216 枚，满足 readme 的 200+ 棋子压力。
+  //
+  // 中间留一条 2 行的空地带：全填满的话
+  // 「点击空白落子」这条交互就永远走不到。
+  //
+  // 注意：种子坐标都是整数，浮点链路真正的考验在用户拖拽
+  //（落点由屏幕坐标反解，必然是任意小数）。
   _seed() {
-    const mid = 2;
-    const side = Math.floor((this.rows - mid) / 2);
-    let k = 0;
+    const SP = 72;                     // 棋子间距（世界单位）
+    const COLS = 12, SIDE = 9, GAP = 2;
 
+    let k = 0;
     for (let band = 0; band < 2; band++) {
-      const y0 = band === 0 ? 0 : this.rows - side;
-      for (let y = y0; y < y0 + side; y++) {
-        for (let x = 0; x < this.cols; x++) {
-          const id = 'p' + (y * this.cols + x);
+      // 上阵地：GAP/2 行留空；下阵地：镜像
+      for (let row = 0; row < SIDE; row++) {
+        const y = band === 0
+          ? -(GAP * SP) / 2 - (SIDE - row - 1) * SP
+          : (GAP * SP) / 2 + row * SP;
+
+        for (let col = 0; col < COLS; col++) {
+          const x = (col - (COLS - 1) / 2) * SP;
+          const id = 'p' + band + '_' + row + '_' + col;
           this.pieces.set(id, { id, x, y, r: 0, f: 0, k: k++ % 16 });
         }
       }
@@ -73,9 +82,6 @@ class Room {
       if (!d || !Array.isArray(d.pieces)) return false;
 
       this.seq = d.seq | 0;
-      this.cell = d.cell || this.cell;
-      this.cols = d.cols || this.cols;
-      this.rows = d.rows || this.rows;
       this.pieces = new Map(d.pieces.map((p) => [p.id, p]));
       return this.pieces.size > 0;
     } catch (_) {
@@ -85,9 +91,6 @@ class Room {
 
   snapshot() {
     return {
-      cell: this.cell,
-      cols: this.cols,
-      rows: this.rows,
       seq: this.seq,
       pieces: Array.from(this.pieces.values())
     };
@@ -129,7 +132,7 @@ class Room {
 
   /* ---------- op ---------- */
 
-  // 返回分配好 seq 的广播包；不合法（不认识的 op / 不存在的棋子）返回 null
+  // 返回归一化后的 op；不认识 / 不合法的返回 null（不分配 seq）
   applyOp(op) {
     if (!op || typeof op !== 'object') return null;
 
@@ -138,8 +141,14 @@ class Room {
 
     switch (op.k) {
       case 'move': {
-        const x = Number(op.x);
-        const y = Number(op.y);
+        const x = op.x;
+        const y = op.y;
+        // 必须严格要求是 number 且有限。
+        // 不能用 Number(op.x) 这种宽松写法：JSON 里 NaN 会序列化成 null，
+        // 而 Number(null) === 0，于是一个 NaN 坐标会被静默当成 (0,0) 收下。
+        // 同理 Number('') / Number([]) 也都是 0。
+        // 只要求有限数、不钳制范围 —— 地图无边界。
+        if (typeof x !== 'number' || typeof y !== 'number') return null;
         if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
         p.x = x; p.y = y;
         break;

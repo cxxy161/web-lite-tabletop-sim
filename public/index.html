@@ -9,7 +9,7 @@
 </head>
 <body>
 
-<!-- 双层 Canvas：bg = 底图静态冷冻，fg = 顶层按需重绘 -->
+<!-- 双层 Canvas：bg = 静态参考物（原点准星），fg = 棋子层按需重绘 -->
 <canvas id="bg"></canvas>
 <canvas id="fg"></canvas>
 
@@ -21,11 +21,14 @@
   <span id="hud-peers">1 人</span>
   <span class="sep">·</span>
   <span id="hud-seq">seq 0</span>
+  <span class="sep">·</span>
+  <span id="hud-pos">x 0.0  y 0.0</span>
 </div>
 
 <div id="tools">
   <button id="btn-flipall" type="button">全部翻面</button>
-  <button id="btn-fit" type="button">适配视图</button>
+  <button id="btn-origin" type="button">回原点</button>
+  <button id="btn-fit" type="button">适配棋子</button>
 </div>
 
 <script src="atlas.js"></script>
