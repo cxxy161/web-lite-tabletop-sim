@@ -17,6 +17,12 @@
 <!-- 左上角统一面板：状态 + 工具 + 设置 -->
 <div id="panel">
 
+  <button id="panel-toggle" class="panel-toggle" type="button" aria-expanded="true">
+    <span class="pt-label">状态</span><span class="caret"></span>
+  </button>
+
+  <div id="panel-body">
+
   <div id="hud">
     <span id="hud-room">demo</span>
     <span class="sep">·</span>
@@ -85,6 +91,8 @@
     <div class="set-note">导出得到 base64 文本，复制走即可；导入把文本粘回来。<b>不写文件</b>。</div>
   </div>
 
+  </div><!-- /panel-body -->
+
 </div>
 
 <!-- 物品拖拽时的跟随幽灵。必须是 canvas：paintGhost 要在上面画缩略图 -->
@@ -92,6 +100,10 @@
 
 <!-- 右上角：玩家列表 + 我的队伍 -->
 <div id="players" hidden>
+  <button id="players-toggle" class="panel-toggle" type="button" aria-expanded="true">
+    <span class="pt-label">玩家</span><span class="caret"></span>
+  </button>
+  <div id="players-body">
   <div class="pl-head">
     <b id="pl-room">房间</b>
     <span id="pl-code" class="pl-code"></span>
@@ -101,6 +113,7 @@
     <span class="set-label">我的队伍</span>
     <div id="pl-teams" class="set-seg"></div>
   </div>
+  </div><!-- /players-body -->
 </div>
 
 <!-- 左下角：消息流 -->
@@ -140,6 +153,7 @@
 <script src="menu.js"></script>
 <script src="room.js"></script>
 <script src="log.js"></script>
+<script src="panels.js"></script>
 <script src="saves.js"></script>
 <script src="app.js"></script>
 </body>

@@ -1574,7 +1574,20 @@
   // 「掷骰」动作：双击骰子即可掷（骰子自己的菜单里也有）。
   // 键盘 R 也能掷选中的骰子，补上撤掉的工具栏按钮。
 
-  /* ---------- 启动 ---------- */  /* ---------- 启动 ---------- */
+  /* ---------- 启动 ---------- */  /* ---------- 面板折叠 ---------- */
+
+  // 窄屏默认收起，避免左上/右上两块叠在一起（见 panels.js 的文件头）。
+  // 两块互为 peer：窄屏上展开一块会自动收起另一块。
+  var panelLeft = global.Panels ? global.Panels.create({
+    id: 'left', el: '#panel', toggle: '#panel-toggle',
+    peer: function () { return panelRight; }
+  }) : null;
+  var panelRight = global.Panels ? global.Panels.create({
+    id: 'right', el: '#players', toggle: '#players-toggle',
+    peer: function () { return panelLeft; }
+  }) : null;
+
+  /* ---------- 启动 ---------- */
 
   board.resetView();
   syncHud();

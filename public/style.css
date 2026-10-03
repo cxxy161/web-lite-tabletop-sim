@@ -43,7 +43,10 @@ canvas{display:block}
   position:fixed;z-index:2;
   top:8px;left:8px;
   display:flex;flex-direction:column;gap:6px;
-  max-width:calc(100vw - 16px);
+  /* 收紧宽度：之前是 calc(100vw - 16px)，窄屏上会铺满一整行，
+     和右上角的玩家面板完全叠住（390px 屏实测左 8->382、右 170->382）。
+     现在限到 58vw，两块各占一侧，中间留出空隙。 */
+  max-width:min(320px,58vw);
   padding:8px;
   background:var(--panel);
   border:1px solid var(--line);
@@ -391,7 +394,7 @@ button.primary:disabled{opacity:.55;cursor:default}
   position:fixed;z-index:2;
   top:8px;right:8px;
   display:flex;flex-direction:column;gap:6px;
-  min-width:150px;max-width:min(260px,calc(100vw - 16px));
+  min-width:132px;max-width:min(260px,40vw);
   max-height:calc(100vh - 16px);
   padding:8px;
   background:var(--panel);
@@ -524,4 +527,46 @@ button.primary:disabled{opacity:.55;cursor:default}
 @media (max-width:560px){
   #log{max-width:calc(100vw - 16px)}
   .log-row{font-size:11px;padding:4px 8px}
+}
+
+/* ---------- 面板折叠 ---------- */
+
+/* 折叠按钮：整条可点，右侧一个箭头指示状态 */
+.panel-toggle{
+  appearance:none;
+  display:flex;align-items:center;gap:6px;
+  width:100%;
+  padding:3px 4px;
+  border:0;background:transparent;
+  color:var(--dim);
+  font:inherit;font-size:11px;font-weight:600;
+  letter-spacing:.04em;
+  cursor:pointer;
+  text-align:left;
+}
+.panel-toggle:hover{color:var(--fg)}
+.panel-toggle .pt-label{flex:1}
+
+/* 箭头：收起时朝下、展开时朝上。
+   用 CSS 三角形而不是字符 —— 不同设备上 ▾/▴ 的字形差异很大。 */
+.panel-toggle .caret{
+  width:0;height:0;flex:none;
+  border-left:4px solid transparent;
+  border-right:4px solid transparent;
+  border-bottom:5px solid currentColor;
+  transition:transform .18s ease;
+}
+.panel-toggle[aria-expanded="true"] .caret{transform:rotate(180deg)}
+
+/* 收起状态：只留按钮 */
+#panel.collapsed #panel-body,
+#players.collapsed #players-body{display:none}
+
+/* 收起后按钮自己不需要底部留白 */
+#panel.collapsed,
+#players.collapsed{padding-bottom:5px}
+
+/* 窄屏：折叠按钮的点击区域放大一点，手指好点 */
+@media (max-width:560px){
+  .panel-toggle{padding:5px 4px;font-size:12px}
 }
