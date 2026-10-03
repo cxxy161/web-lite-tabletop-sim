@@ -131,6 +131,25 @@
     return { x: x * mapSX, y: y * mapSY };
   }
 
+  // 矩形映射：两个角都映射再归一（只映左上角在负向映射时会错位）
+  function mapRect(z) {
+    var a = mapPt(z.x, z.y);
+    var b = mapPt(z.x + z.w, z.y + z.h);
+    var out = {};
+    for (var k in z) if (z.hasOwnProperty(k)) out[k] = z[k];
+    out.x = Math.min(a.x, b.x);
+    out.y = Math.min(a.y, b.y);
+    out.w = Math.abs(b.x - a.x);
+    out.h = Math.abs(b.y - a.y);
+    return out;
+  }
+
+  // 服务端给的是原始坐标，进内存前换成显示坐标。
+  // **收和发必须成对**：只做一头的话，框和生效范围会镜像。
+  function zonesToDisplay(list) {
+    return (list || []).map(mapRect);
+  }
+
   var elHudRoom = document.getElementById('hud-room');
   var elHudConn = document.getElementById('hud-conn');
   var elHudPeers = document.getElementById('hud-peers');
@@ -384,6 +403,28 @@
       net.send({ t: 'op', op: { k: 'clone', id: op.id, x: c.x, y: c.y } });
       return;
     }
+    // 视野区**也是坐标**（矩形），同样必须换回原始坐标。
+    //
+    // 漏掉它的后果特别隐蔽：区域用显示坐标存、服务端按原始坐标判定，
+    // 而默认映射 pn 是「y 取反」，于是**画出来的框和真正生效的范围
+    // 上下镜像** —— 你看着框住了上方一片，实际被挡住的是下方那片。
+    // 表现就是「明明框住了，有些东西还是没隐藏（而另一些莫名消失了）」。
+    if (op.k === 'zone' && op.zone) {
+      var rz = {};
+      for (var zk in op.zone) if (op.zone.hasOwnProperty(zk)) rz[zk] = op.zone[zk];
+      // 矩形要按「两个角都映射、再归一成左上角 + 正宽高」处理，
+      // 不能只映射左上角 —— 负向映射会让左上角跑到右下角去。
+      var x1 = op.zone.x, y1 = op.zone.y;
+      var x2 = op.zone.x + op.zone.w, y2 = op.zone.y + op.zone.h;
+      var a = mapPt(x1, y1), b = mapPt(x2, y2);
+      rz.x = Math.min(a.x, b.x);
+      rz.y = Math.min(a.y, b.y);
+      rz.w = Math.abs(b.x - a.x);
+      rz.h = Math.abs(b.y - a.y);
+      net.send({ t: 'op', op: { k: 'zone', zone: rz } });
+      return;
+    }
+
     // dice / token **也带坐标**，同样必须换回原始坐标再发。
     // 漏掉这一条时：本地按显示坐标保存，服务端按原始坐标广播，
     // 于是同一位置在别人屏幕上（y 符号相反）会镜像到另一侧 ——
@@ -449,7 +490,7 @@
     // 视野区变更
     if (op.k === 'zone') {
       if (global.ZoneUI) {
-        global.ZoneUI.setZones(op.zones || []);
+        global.ZoneUI.setZones(zonesToDisplay(op.zones));
       }
       // 区域变了，背景层要重画
       board.requestBg ? board.requestBg() : board.requestDraw();
@@ -920,8 +961,9 @@
         pieces.set(p.id, p);
       });
 
-      // 视野区（服务端已按我的队伍过滤过，这里不必再判一次）
-      if (global.ZoneUI) global.ZoneUI.setZones(m.zones || []);
+      // 视野区（服务端已按我的队伍过滤过，这里不必再判一次）。
+      // **但坐标要换回显示系** —— 服务端存的是原始坐标。
+      if (global.ZoneUI) global.ZoneUI.setZones(zonesToDisplay(m.zones));
 
       orderDirty = true;
       if (elHudScene) elHudScene.textContent = m.label || m.scene || '—';
@@ -1703,6 +1745,11 @@
   // 画在**背景层**：区域边框只在视变换变化时才需要重画，
   // 而棋子每帧都在动。画在 fg 上会白白增加每帧开销。
   if (global.ZoneUI) {
+    // 队伍色到了 / 区域变了都要重画背景层
+    global.ZoneUI.onRedraw(function () {
+      board.requestBg();
+      board.requestDraw();
+    });
     board.setBgDrawer(function (g, view) {
       var isOwner = false;
       var st = global.RoomUI && global.RoomUI.state();

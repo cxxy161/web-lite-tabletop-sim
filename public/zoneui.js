@@ -11,10 +11,36 @@
 (function (global) {
   'use strict';
 
+  // 兜底色：只在区域没有指定队伍（或队伍色缺失）时用。
   var MODE_COLOR = {
-    hide: '#b4453a',      // 红：看不见
-    blind: '#8a7bb5'      // 紫：看得见框但内容脱敏
+    hide: '#b4453a',
+    blind: '#8a7bb5'
   };
+
+  /**
+   * 区域的颜色 = **被授权队伍的颜色**。
+   *
+   * 纯红（按模式上色）的话，一屏几个区域根本分不清哪个属于谁；
+   * 用队伍色一眼就知道「这块是红方的」。没有授权队伍时（对所有人
+   * 都遮挡）才回落到模式色，并用虚线区分。
+   */
+  function colorOf(z) {
+    var ids = z.see || [];
+    for (var i = 0; i < ids.length; i++) {
+      for (var j = 0; j < teams.length; j++) {
+        if (teams[j].id === ids[i] && teams[j].color) return teams[j].color;
+      }
+    }
+    return MODE_COLOR[z.mode] || '#b4453a';
+  }
+
+  // 把队伍色转成淡填充用的 rgba
+  function tint(hex, alpha) {
+    var m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex || ''));
+    if (!m) return 'rgba(180,69,58,' + alpha + ')';
+    var n = parseInt(m[1], 16);
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + alpha + ')';
+  }
 
   var elBtn = document.getElementById('btn-zone');
   var elBar = document.getElementById('zone-bar');
@@ -38,6 +64,7 @@
   function setZones(list) {
     zones = Array.isArray(list) ? list : [];
     renderList();
+    if (onRedraw) onRedraw();
   }
 
   function setTeams(list) {
@@ -47,7 +74,14 @@
       see = [myTeamId];
     }
     renderTeamPicker();
+    // 区域的颜色来自队伍色，所以队伍到了要重画一次。
+    // （init 里 zones 可能先于 room 消息到达，那时颜色只能回落，
+    //   不重画的话会一直显示成兜底色。）
+    if (onRedraw) onRedraw();
+    renderList();
   }
+
+  var onRedraw = null;
 
   var myTeamId = null;
   function setMyTeam(id) {
@@ -70,11 +104,11 @@
 
     zones.forEach(function (z) {
       var x = (z.x - ox), y = (z.y - oy);
-      var color = MODE_COLOR[z.mode] || '#b4453a';
+      var color = colorOf(z);
 
       g.save();
       // 填充用很淡的一层，避免挡住下面的棋子
-      g.fillStyle = z.mode === 'blind' ? 'rgba(138,123,181,.10)' : 'rgba(180,69,58,.08)';
+      g.fillStyle = tint(color, z.mode === 'blind' ? 0.12 : 0.09);
       g.fillRect(x, y, z.w, z.h);
 
       // 描边在屏幕坐标里保持恒定粗细（除以 s 抵消 scale）
@@ -101,10 +135,17 @@
       var dy = Math.min(drafting.y0, drafting.y1) - oy;
       var dw = Math.abs(drafting.x1 - drafting.x0);
       var dh = Math.abs(drafting.y1 - drafting.y0);
+      // 草稿用「即将生效」的颜色 —— 即当前选中的队伍色，
+      // 这样画的时候就知道它会是什么颜色。
       var dc = MODE_COLOR[mode] || '#b4453a';
+      for (var di = 0; di < see.length; di++) {
+        for (var dj = 0; dj < teams.length; dj++) {
+          if (teams[dj].id === see[di] && teams[dj].color) dc = teams[dj].color;
+        }
+      }
 
       g.save();
-      g.fillStyle = 'rgba(194,112,63,.14)';
+      g.fillStyle = tint(dc, 0.12);
       g.fillRect(dx, dy, dw, dh);
       g.strokeStyle = dc;
       g.lineWidth = 2 / Math.max(s, 0.02);
@@ -167,6 +208,10 @@
       var tag = document.createElement('span');
       tag.className = 'zone-tag ' + z.mode;
       tag.textContent = z.mode === 'hide' ? '仅 ' + seeNames(z.see) : seeNames(z.see) + ' 见背面';
+      // 标签也染上队伍色，和画布上的框对应起来
+      var tc = colorOf(z);
+      tag.style.background = tint(tc, 0.16);
+      tag.style.color = tc;
       row.appendChild(tag);
 
       var del = document.createElement('button');
@@ -213,6 +258,7 @@
     setZones: setZones,
     setTeams: setTeams,
     setMyTeam: setMyTeam,
+    onRedraw: function (fn) { onRedraw = fn; },
     draw: draw,
     isDrawing: function () { return drawMode; },
     onSend: function (fn) { sendFn = fn; },

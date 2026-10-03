@@ -88,9 +88,18 @@ function inRect(px, py, z) {
 /**
  * 求一枚棋子对某队伍的可见性。
  * 返回 { hidden, blind } —— 两者不会同时为真。
+ *
+ * **旁观（teamId 为空）= 上帝视角，一切可见。**
+ * 这是刻意的：旁观者是「看棋的人」，看不到全部就没法看。
+ *
+ * ⚠️ 代价必须知道：队伍是**玩家在右上角自己选的**，所以任何在场的人
+ * 点一下「旁观」就能看穿全部 —— 双盲对自愿旁观的人不设防。
+ * 这符合「防误看」的定位，而不是「防作弊」。真要防作弊，
+ * 得把「谁能当旁观」也交给房主控制（见 readme 的已知限制）。
  */
 function resolve(piece, zones, teamId) {
   if (!zones || !zones.length) return { hidden: false, blind: false };
+  if (!teamId) return { hidden: false, blind: false };   // 旁观 = 上帝视角
 
   let granted = false, hidden = false, blind = false;
 
@@ -98,7 +107,7 @@ function resolve(piece, zones, teamId) {
     const z = zones[i];
     if (!inRect(piece.x, piece.y, z)) continue;
 
-    if (teamId && z.see.indexOf(teamId) >= 0) { granted = true; break; }
+    if (z.see.indexOf(teamId) >= 0) { granted = true; break; }
     if (z.mode === 'blind') blind = true;
     else hidden = true;
   }
@@ -143,9 +152,11 @@ function pieceFor(piece, zones, teamId) {
  */
 function zoneList(zones, teamId) {
   if (!zones || !zones.length) return [];
+  // 旁观是上帝视角 -> 所有区域都看得见（含 hide 的框）
+  if (!teamId) return zones.slice();
   return zones.filter(function (z) {
     if (z.mode !== 'hide') return true;
-    return !!(teamId && z.see.indexOf(teamId) >= 0);
+    return z.see.indexOf(teamId) >= 0;
   });
 }
 
