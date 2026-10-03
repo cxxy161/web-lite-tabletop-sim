@@ -48,6 +48,12 @@
     var boardCount = 0;       // 底图张数
     var onReady = (opts && opts.onReady) || null;
 
+    // 预算可调：LOD 关闭时同屏贴图数会暴涨（全场景视图 514 张 / 113MB），
+    // 若仍卡在 72MB 就会出现「每张都可见 -> 谁也淘汰不掉 -> 下帧全重载」
+    // 的抖动，比开着 LOD 更糟。所以预算必须跟着 LOD 档位一起放大。
+    var budgetSmall = BUDGET_SMALL;
+    var budgetBoard = BUDGET_BOARD;
+
     // 未加载完时先按小图估算，加载后按真实尺寸修正
     var ASSUME_BYTES = 192 * 192 * 4;
 
@@ -90,8 +96,8 @@
 
     function overBudget() {
       return map.size > MAX_ITEMS ||
-             smallBytes > BUDGET_SMALL ||
-             boardCount > BUDGET_BOARD;
+             smallBytes > budgetSmall ||
+             boardCount > budgetBoard;
     }
 
     function evict() {
@@ -180,6 +186,20 @@
 
       // 供诊断/压测使用
       ids: function () { return Array.from(map.keys()); },
+
+      // 调整显存预算（LOD 档位切换时调用）。调小会立刻触发淘汰。
+      setBudget: function (mbSmall, boards) {
+        budgetSmall = Math.max(8, mbSmall) * 1024 * 1024;
+        budgetBoard = Math.max(1, boards | 0);
+        evict();
+      },
+
+      budget: function () {
+        return {
+          smallMB: Math.round(budgetSmall / 1048576),
+          boards: budgetBoard
+        };
+      },
 
       clear: function () {
         map.forEach(function (r) { r.img.onload = null; r.img.src = ''; });

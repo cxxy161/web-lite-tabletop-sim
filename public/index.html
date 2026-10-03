@@ -13,32 +13,46 @@
 <canvas id="bg"></canvas>
 <canvas id="fg"></canvas>
 
-<div id="hud">
-  <span id="hud-room">demo</span>
-  <span class="sep">·</span>
-  <span id="hud-conn" class="off">连接中</span>
-  <span class="sep">·</span>
-  <span id="hud-peers">1 人</span>
-  <span class="sep">·</span>
-  <span id="hud-scene">—</span>
-  <span class="sep">·</span>
-  <span id="hud-seq">seq 0</span>
-  <span class="sep">·</span>
-  <span id="hud-pos">x 0.0  y 0.0</span>
-  <span class="sep">·</span>
-  <span id="hud-sel">未选中</span>
-  <span class="sep">·</span>
-  <span id="hud-tex">贴图 0/0</span>
-</div>
+<!-- 左上角统一面板：状态 + 工具 + 设置 -->
+<div id="panel">
 
-<div id="tools">
-  <button id="btn-all" type="button">全选</button>
-  <button id="btn-none" type="button">取消选择</button>
-  <button id="btn-flipall" type="button">翻面</button>
-  <button id="btn-origin" type="button">回原点</button>
-  <button id="btn-fit" type="button">适配</button>
-  <button id="btn-saves" type="button">存档</button>
-  <button id="btn-load" type="button">读档</button>
+  <div id="hud">
+    <span id="hud-room">demo</span>
+    <span class="sep">·</span>
+    <span id="hud-conn" class="off">连接中</span>
+    <span class="sep">·</span>
+    <span id="hud-peers">1 人</span>
+    <span class="sep">·</span>
+    <span id="hud-scene">—</span>
+    <span class="sep">·</span>
+    <span id="hud-seq">seq 0</span>
+    <span class="sep">·</span>
+    <span id="hud-sel">未选中</span>
+    <span class="sep">·</span>
+    <span id="hud-tex">贴图 0/0</span>
+    <span class="sep">·</span>
+    <span id="hud-pos">x 0.0  y 0.0</span>
+  </div>
+
+  <div id="tools">
+    <button id="btn-all" type="button">全选</button>
+    <button id="btn-none" type="button">取消</button>
+    <button id="btn-flipall" type="button">翻面</button>
+    <button id="btn-origin" type="button">原点</button>
+    <button id="btn-fit" type="button">适配</button>
+    <button id="btn-saves" type="button">存档</button>
+    <button id="btn-load" type="button">读档</button>
+    <button id="btn-settings" type="button">设置</button>
+  </div>
+
+  <div id="settings" hidden>
+    <div class="set-row">
+      <span class="set-label">画质 / LOD</span>
+      <div id="lod-levels" class="set-seg"></div>
+    </div>
+    <div id="lod-note" class="set-note"></div>
+  </div>
+
 </div>
 
 <div id="fatal" hidden></div>
@@ -64,6 +78,7 @@
 <script src="board.js"></script>
 <script src="texture.js"></script>
 <script src="net.js"></script>
+<script src="settings.js"></script>
 <script src="saves.js"></script>
 <script src="app.js"></script>
 </body>

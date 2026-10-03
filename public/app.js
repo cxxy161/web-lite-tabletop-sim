@@ -28,16 +28,15 @@
   var ACCENT = '#c2703f';
   var SELECT_FILL = 'rgba(194,112,63,.18)';
 
-  // 细节层次阈值（屏幕像素）。棋子的屏幕长边小于这个值时**不加载贴图**，
-  // 改画一个纯色块。
+  // LOD 阈值（屏幕像素），由 settings.js 的档位控制。
   //
-  // 这不是省事的偷懒，而是低配机能跑起来的必要条件：
-  // 全场景适配时 778 枚棋子全在屏幕上，如果每枚都要真贴图，
-  // LRU 一个也淘汰不掉（全都「可见」），瞬间就要
-  // 778 × 192×192×4B ≈ 114MB 显存 —— 老手机必崩。
-  // 缩到 8px 的卡面本来也看不出画的是什么，
-  // 用色块顶上既保住帧率又不损失可读信息。
-  var LOD_MIN = 18;
+  // 棋子的屏幕长边小于这个值时**不加载贴图**，改画纯色块。
+  // 这不是偷懒，而是低配机能跑起来的必要条件：全场景适配时 778 枚
+  // 棋子全在屏幕上，如果每枚都要真贴图，LRU 一个也淘汰不掉（全都
+  // 「可见」），瞬间要 778 × 192×192×4B ≈ 114MB 显存 —— 老手机必崩。
+  //
+  // 默认 18 是「均衡」档；可在设置面板里放宽到 8 或完全关闭。
+  var lodThreshold = 18;
 
   var qs = new URLSearchParams(global.location.search);
   var ROOM = (qs.get('room') || 'demo').replace(/[^\w-]/g, '').slice(0, 32) || 'demo';
@@ -124,9 +123,9 @@
         var rr = p.r || 0;
 
         // LOD：屏幕长边太小就不加载贴图，画色块。
-        // 这是「全场景缩放时显存不爆」的关键闸门，见文件头 LOD_MIN 注释。
+        // 阈值可调（设置面板），0 表示关闭 LOD（任何尺寸都画真贴图）。
         var screenLong = Math.max(p.w, p.h) * s;
-        if (screenLong < LOD_MIN) {
+        if (lodThreshold > 0 && screenLong < lodThreshold) {
           g.fillStyle = p.f ? '#cfc6b4' : '#b9ac93';
           g.fillRect(cx - hw, cy - hh, p.w, p.h);
           if (selection.has(p.id) && showRing) strokeSel(g, cx - hw, cy - hh, p.w, p.h, s);
@@ -552,6 +551,34 @@
     else if (e.key === 'r') commit({ k: 'rot', id: one.id, r: ((one.r || 0) + 90) % 360 });
   });
 
+  /* ---------- 设置：LOD 档位 ---------- */
+
+  var elSettings = document.getElementById('settings');
+  var elSettingsBtn = document.getElementById('btn-settings');
+
+  elSettingsBtn.addEventListener('click', function () {
+    elSettings.hidden = !elSettings.hidden;
+    elSettingsBtn.className = elSettings.hidden ? '' : 'on';
+  });
+
+  var settings = global.Settings.create({
+    el: document.getElementById('lod-levels'),
+    elNote: document.getElementById('lod-note'),
+    initial: 'mid',
+    apply: function (threshold) {
+      lodThreshold = threshold;
+      board.requestDraw();
+    },
+    onBudget: function (mb, boards) {
+      // LOD 与显存预算必须同步改：关闭 LOD 时同屏贴图会涨到 500+ 张，
+      // 预算还卡在 72MB 就会持续抖动（比开着 LOD 更糟）。见 settings.js 注释。
+      tex.setBudget(mb, boards);
+    },
+    onChange: function (lv) {
+      fitPieces();          // 档位变了，按新预算重排一次视图
+    }
+  });
+
   /* ---------- 启动 ---------- */
 
   board.resetView();
@@ -565,9 +592,11 @@
     board: board,
     net: net,
     tex: tex,
+    settings: settings,
     commit: commit,
     bounds: bounds,
     ordered: ordered,
-    pick: pick
+    pick: pick,
+    lod: function () { return lodThreshold; }
   };
 })(window);
