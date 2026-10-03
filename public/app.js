@@ -320,7 +320,9 @@
     if (!q) return;
 
     if (op.k === 'flip') q.f = op.f ? 1 : 0;
-    else if (op.k === 'rot') q.r = ((op.r | 0) % 360 + 360) % 360;
+    // 保留一位小数：真实资产有 596 枚棋子的朝向是 0.27 这类小数，
+    // 用 |0 取整会把它们静默抹平（服务端也是同样精度）。
+    else if (op.k === 'rot') q.r = normR(op.r);
     else if (op.k === 'lock') q.lk = op.lk ? 1 : 0;
     else if (op.k === 'state') {
       q.si = op.si | 0;
@@ -566,6 +568,21 @@
   /* ---------- HUD ---------- */
 
   function fmt(v) { return (Math.round(v * 10) / 10).toFixed(1); }
+
+  // 角度归一：保留**两位**小数，与服务端 / codec 的精度约定一致
+  // （场景数据里 r 就是两位小数，如 0.27 / 359.94）
+  //
+  // 注意不能写成 ((n % 360) + 360) % 360：0.27 先 +360 再取模
+  // 会得到 0.2699999999999818（浮点残留），与服务端算出的值不等。
+  function normR(v) {
+    var n = Number(v);
+    if (!isFinite(n)) return 0;
+    var m = n % 360;
+    if (m < 0) m += 360;
+    m = Math.round(m * 100) / 100;
+    if (m >= 360) m = 0;
+    return m;
+  }
 
   function setHudPos(x, y) {
     if (elHudPos) elHudPos.textContent = 'x ' + fmt(x) + '  y ' + fmt(y);
@@ -835,7 +852,7 @@
 
       case 'rot':
         sel.forEach(function (p) {
-          if (!p.lk) commit({ k: 'rot', id: p.id, r: ((p.r || 0) + 90) % 360 });
+          if (!p.lk) commit({ k: 'rot', id: p.id, r: normR((p.r || 0) + 90) });
         });
         break;
 

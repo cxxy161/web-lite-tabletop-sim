@@ -253,7 +253,19 @@ class Room {
       case 'rot': {
         const p = this.pieces.get(op.id);
         if (!p || p.lk) return null;
-        p.r = (((Number(op.r) | 0) % 360) + 360) % 360;
+        // 保留**两位**小数，与场景数据 / codec 的精度一致。
+        // **不能用 |0 或 Math.round**：真实资产里有 0.27 / 359.94
+        // 这类朝向（rotY 换算的余数），取整会静默抹平它们。
+        //
+        // 也不能写成 ((n % 360) + 360) % 360：0.27 先 +360 再取模
+        // 会得到 0.2699999999999818（浮点残留）。先归一非负、再取整。
+        const n = Number(op.r);
+        if (!Number.isFinite(n)) return null;
+        let m = n % 360;
+        if (m < 0) m += 360;
+        m = Math.round(m * 100) / 100;
+        if (m >= 360) m = 0;
+        p.r = m;
         this.seq++;
         this.save();
         return { k: 'rot', id: p.id, r: p.r, z: p.z };

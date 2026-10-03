@@ -40,6 +40,27 @@ const VERSION = 1;
 function r2(v) { return Math.round(v * 100) / 100; }
 function r1(v) { return Math.round(v * 10) / 10; }
 
+// 角度归一到 [0,360)，保留**两位**小数。
+//
+// 精度必须和场景数据对齐：build_assets.py 里 r 是 round(..., 2)，
+// 实测有 0.27 / 359.94 这类值。用 r1（一位小数）会把 0.27 变 0.3，
+// 用 Math.round 更会把 596 枚棋子的朝向直接抹平 ——
+// 两者都是「不报错但不可逆」的精度损失。
+//
+// 注意**不能**写成 ((r2(n) % 360) + 360) % 360：
+// 0.27 先 +360 变 360.27，再取模得到 0.2699999999999818 ——
+// 浮点残留。正确做法是先归一到非负，再取整。
+function normR(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+
+  let m = n % 360;
+  if (m < 0) m += 360;
+  m = Math.round(m * 100) / 100;
+  if (m >= 360) m = 0;          // 359.999 之类的取整进位要折回 0
+  return m;
+}
+
 /**
  * 棋子数组 -> 紧凑对象
  */
@@ -67,7 +88,7 @@ function encode(pieces, meta) {
   for (let i = 0; i < pieces.length; i++) {
     const p = pieces[i];
     rows.push([
-      r2(p.x), r2(p.y), r1(p.r || 0), p.f ? 1 : 0,
+      r2(p.x), r2(p.y), r2(p.r || 0), p.f ? 1 : 0,
       r2(p.w), r2(p.h),
       aid(p.img), aid(p.bimg),
       p.z | 0,
@@ -198,7 +219,12 @@ function decode(obj) {
     pieces.push({
       id,
       x, y,
-      r: ((Math.round(rot) % 360) + 360) % 360,
+      // r 用**一位小数**保留，不能 Math.round 成整数。
+      // 场景里 7796 枚棋子有 596 枚的 r 是非整数（如 0.27），
+      // 那是 rotY 换算后的小数部分。encode 按 r1() 写一位小数、
+      // decode 却取整，于是「导出再导入」每轮都在丢精度，
+      // 存档字节数也随之下漂（实测 92300 -> 91900）。不报错但不可逆。
+      r: normR(rot),
       f: f ? 1 : 0,
       w: fw, h: fh,
       img: fimg,
