@@ -55,9 +55,22 @@
   var drawMode = false;    // 是否处于「拖拽画区」状态
 
   var mode = 'hide';
-  // 默认「仅自己队伍可见」。留空会让新区块把**所有人**（包括建区的你）
-  // 都挡在外面，画完发现东西没了会以为是 bug。
+  // 「谁能看见这块区」。
+  //
+  // 留空 = 对**所有队伍**遮挡（只有上帝视角的 `spec` 看得穿）。
+  // 这不是默认想要的，所以下面会自动预选一支队伍 —— 但**只在
+  // 自己的队伍是一支真正的对战方（红/蓝）时**才预选：
+  // 早期无条件预选自己的队伍，于是刚进房间（默认「未入座」）就
+  // 建区的人，区被默认成「只有未入座能看见」= 挡住红蓝双方所有人，
+  // 画完一看东西全没了。
   var see = [];
+  var seeTouched = false;   // 用户手动选过之后，就不再自动接管
+
+  // 能作为「授权对象」展示的队伍。`spec`（上帝视角）不需要授权
+  //（它本来就看得见全部），列出来只会让人困惑。
+  function grantableTeams() {
+    return teams.filter(function (t) { return t.id !== 'spec'; });
+  }
 
   /* ---------- 对外数据同步 ---------- */
 
@@ -69,10 +82,7 @@
 
   function setTeams(list) {
     teams = Array.isArray(list) ? list : [];
-    // 第一次拿到队伍列表时，默认勾上自己的队伍（见 see 的注释）
-    if (!see.length && myTeamId && teams.some(function (t) { return t.id === myTeamId; })) {
-      see = [myTeamId];
-    }
+    autoPick();
     renderTeamPicker();
     // 区域的颜色来自队伍色，所以队伍到了要重画一次。
     // （init 里 zones 可能先于 room 消息到达，那时颜色只能回落，
@@ -86,11 +96,22 @@
   var myTeamId = null;
   function setMyTeam(id) {
     myTeamId = id || null;
-    // 换队时把默认项跟着换（但不动用户已手动改过的选择）
-    if (myTeamId && !see.length) {
-      see = [myTeamId];
-      renderTeamPicker();
-    }
+    autoPick();
+    renderTeamPicker();
+  }
+
+  /**
+   * 预选「可见队伍」。
+   *
+   * 只在两条件下自动接管：用户没手动选过、且自己确实在一支对战方里。
+   * 在「未入座」或「旁观」时不预选 —— 那时没有合理的默认，
+   * 留给用户自己选（`commit` 会拦住空选择并给出提示）。
+   */
+  function autoPick() {
+    if (seeTouched) return;
+    if (myTeamId !== 'red' && myTeamId !== 'blue') { see = []; return; }
+    if (!teams.some(function (t) { return t.id === myTeamId; })) { see = []; return; }
+    see = [myTeamId];
   }
 
   /* ---------- 绘制 ---------- */
@@ -171,9 +192,10 @@
 
   function renderTeamPicker() {
     if (!elTeams) return;
-    buildSeg(elTeams, teams, see[0] || null, function (id) {
+    buildSeg(elTeams, grantableTeams(), see[0] || null, function (id) {
       // 单选：一个区域先只支持「一个队伍可见」，需要多队时再放开
       see = see[0] === id ? [] : [id];
+      seeTouched = true;          // 用户表态了，之后不再自动接管
       renderTeamPicker();
     });
   }
@@ -283,9 +305,23 @@
       // 太小当作误触，不当成一次建区（否则会留下看不见的小区域）
       if (w < 20 || h < 20) { setHint('矩形太小，已忽略'); return; }
 
+      // **没选可见队伍就不建**。
+      // 空 see 的含义是「对所有人遮挡」（只有旁观看得穿），
+      // 这几乎不会是本意 —— 建出来会发现连自己都看不见，
+      // 而且要排查很久。宁可拦住并说清楚。
+      if (!see.length) {
+        setHint('请先选「可见队伍」再画区');
+        return;
+      }
+
       send({
         k: 'zone',
-        zone: { x: x, y: y, w: w, h: h, see: see.slice(), mode: mode, name: mode === 'hide' ? '禁视区' : '盲视区' }
+        zone: {
+          x: x, y: y, w: w, h: h,
+          see: see.slice(), mode: mode,
+          // 名字带上队伍，一屏几个区时列表里能一眼分清
+          name: seeNames(see) + (mode === 'hide' ? '禁视' : '盲视')
+        }
       });
       setDraw(false);
       setHint('已建区');

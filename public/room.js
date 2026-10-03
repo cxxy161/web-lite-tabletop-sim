@@ -84,10 +84,14 @@
       // 盯着屏幕，房主点两下就把某人的队伍从红切到蓝、再切到旁观，
       // 中间状态全被看见了；而且想指定「到某一队」得点几次全凭运气。
       // 改成菜单后是「看一眼、选一下」，一步到位、也不泄露过程。
-      if (isOwner && p.id !== me.id) {
+      // 房主**也能点自己那一行** —— 房主自己也是一名玩家，
+      // 他也得能给自己选队伍。早期写成 `p.id !== me.id`，
+      // 结果房主无法给自己分队，而「我的队伍」又改成了只读，
+      // 等于房主永远停在「未入座」。
+      if (isOwner) {
         row.title = '点击管理 ' + p.name;
         row.style.cursor = 'pointer';
-        row.addEventListener('click', function () { openPlayerMenu(p, row); });
+        row.addEventListener('click', function () { openPlayerMenu(p, row, p.id === me.id); });
       }
 
       elList.appendChild(row);
@@ -144,7 +148,7 @@
    * 用自建的小浮层而不是复用棋子的 #menu —— 那个是「对棋子操作」的，
    * 混进玩家操作会让两边的状态纠缠（比如菜单开着时换了选择）。
    */
-  function openPlayerMenu(p, anchorRow) {
+  function openPlayerMenu(p, anchorRow, isSelf) {
     closeMenu();
 
     menuEl = document.createElement('div');
@@ -175,20 +179,23 @@
       menuEl.appendChild(b);
     });
 
-    var sep = document.createElement('div');
-    sep.className = 'menu-sep';
-    menuEl.appendChild(sep);
+    // 自己那一行不给「踢出」（服务端也拦着房主踢自己）
+    if (!isSelf) {
+      var sep = document.createElement('div');
+      sep.className = 'menu-sep';
+      menuEl.appendChild(sep);
 
-    var kick = document.createElement('button');
-    kick.type = 'button';
-    kick.className = 'pl-menu-item danger';
-    kick.textContent = '踢出房间';
-    kick.addEventListener('click', function (e) {
-      e.stopPropagation();
-      closeMenu();
-      if (global.confirm('把「' + p.name + '」踢出房间？')) kickPlayer(p.id);
-    });
-    menuEl.appendChild(kick);
+      var kick = document.createElement('button');
+      kick.type = 'button';
+      kick.className = 'pl-menu-item danger';
+      kick.textContent = '踢出房间';
+      kick.addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeMenu();
+        if (global.confirm('把「' + p.name + '」踢出房间？')) kickPlayer(p.id);
+      });
+      menuEl.appendChild(kick);
+    }
 
     // 定位到那一行下方
     var r = anchorRow.getBoundingClientRect();

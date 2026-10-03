@@ -139,7 +139,9 @@ function encode(pieces, meta) {
   // 是一起被设计的，备份时只存棋子、不存区域，恢复出来就是
   // 「棋子都在但全都能看见」，双盲静默失效，而且很难发现。
   if (Array.isArray(meta && meta.zones) && meta.zones.length) {
-    out.z = meta.zones.map(function (z) {
+    // 键名用 `zn` 而不是 `z`：行里已经有一个 z（层叠序），
+    // 两个 z 分属不同层级、含义完全无关，同名会让人读错。
+    out.zn = meta.zones.map(function (z) {
       return [r2(z.x), r2(z.y), r2(z.w), r2(z.h),
               (z.see || []).join(','), z.mode === 'blind' ? 1 : 0,
               String(z.name || '').slice(0, 24)];
@@ -276,8 +278,8 @@ function decode(obj) {
 
   // 视野区：紧凑数组 [x,y,w,h,see,modeInt,name]
   const zones = [];
-  if (Array.isArray(obj.z)) {
-    obj.z.forEach(function (r) {
+  if (Array.isArray(obj.zn)) {
+    obj.zn.forEach(function (r) {
       if (!Array.isArray(r) || r.length < 6) throw new Error('视野区格式错误');
       const [zx, zy, zw, zh, see, blind, name] = r;
       for (const v of [zx, zy, zw, zh]) {
