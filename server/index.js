@@ -151,18 +151,15 @@ wss.on('connection', (ws, req) => {
 
     // 广播给所有人，包含发送者：这样发送者的乐观应用被服务端权威值覆盖，
     // 两端收敛到同一份数据。
+    //
+    // 直接透传 applyOp 的返回值，不要在这里手工挑字段：
+    // move 现在带 list 数组（以及服务端分配的 z），
+    // 手挑字段会把 list 悄悄丢掉。
     broadcast(room, {
       t: 'op',
       seq: room.seq,
       by: name,
-      op: {
-        k: norm.k,
-        id: norm.id,
-        x: norm.x,
-        y: norm.y,
-        r: norm.r,
-        f: norm.f
-      }
+      op: norm
     });
   });
 

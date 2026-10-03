@@ -2,12 +2,15 @@
  * atlas.js —— 棋子图集（占位版）
  *
  * 真实资源到位前的占位实现：在离屏 canvas 上画一张 512x256 的图集，
- * 排布约定与将来的 atlas.png 完全一致，替换只需改 Board 的 atlas 来源。
+ * 排布约定与将来的 atlas.png 完全一致，替换只需改图集来源。
  *
  * 图集约定：8 列 x 4 行，每格 64x64
  *   第 0~1 行 -> 正面，索引 0..15（棋子种类 k）
  *   第 2~3 行 -> 背面，索引 16..31
  *   索引 = (k % 16) + (f ? 16 : 0)
+ *
+ * 配色按「米白桌面」调整：低饱和、明度中等偏深，
+ * 保证在米白底上看得清，同时不像纯色块那么刺眼。
  */
 (function (global) {
   'use strict';
@@ -18,10 +21,10 @@
   var FRONT = 16;          // 正面种类数 = ROWS/2 * COLS
 
   var PALETTE = [
-    '#c0392b', '#d35400', '#b7950b', '#7d8f1c',
-    '#4f8a2b', '#27865a', '#1f8a8a', '#2472a4',
-    '#2f5fa8', '#4a45a8', '#6c3fa8', '#8e3f9e',
-    '#a33f7a', '#a83f56', '#8d6e3a', '#5b6b76'
+    '#9d4b3f', '#a86a33', '#8f7a35', '#6b7a3a',
+    '#4f7346', '#3d7069', '#3a6b7a', '#415d80',
+    '#4c5480', '#5d5180', '#70487a', '#7d4560',
+    '#7a4a52', '#6d5a44', '#5c636b', '#77706a'
   ];
 
   function roundRect(g, x, y, w, h, r) {
@@ -36,17 +39,24 @@
 
   function drawFront(g, x, y, color, label) {
     var p = 3, s = CELL - p * 2;
+
+    // 极淡的落影，让棋子在米白底上有一点厚度感（纯 CSS 风格的克制）
+    g.fillStyle = 'rgba(90,78,60,.16)';
+    roundRect(g, x + p, y + p + 1.5, s, s, 10);
+    g.fill();
+
     g.fillStyle = color;
     roundRect(g, x + p, y + p, s, s, 10);
     g.fill();
 
-    g.strokeStyle = 'rgba(0,0,0,.30)';
-    g.lineWidth = 2;
+    // 内描边：米白底上需要一点边界，否则边缘发虚
+    g.strokeStyle = 'rgba(255,252,245,.30)';
+    g.lineWidth = 1.5;
     roundRect(g, x + p + 1, y + p + 1, s - 2, s - 2, 9);
     g.stroke();
 
-    g.fillStyle = '#fff';
-    g.font = 'bold 28px -apple-system,"Segoe UI",Roboto,sans-serif';
+    g.fillStyle = '#fdfaf3';
+    g.font = 'bold 27px -apple-system,"Segoe UI",Roboto,sans-serif';
     g.textAlign = 'center';
     g.textBaseline = 'middle';
     g.fillText(label, x + CELL / 2, y + CELL / 2 + 1);
@@ -54,23 +64,28 @@
 
   function drawBack(g, x, y) {
     var p = 3, s = CELL - p * 2;
-    g.fillStyle = '#313841';
+
+    g.fillStyle = 'rgba(90,78,60,.16)';
+    roundRect(g, x + p, y + p + 1.5, s, s, 10);
+    g.fill();
+
+    g.fillStyle = '#cfc6b4';
     roundRect(g, x + p, y + p, s, s, 10);
     g.fill();
 
-    g.strokeStyle = '#454e59';
-    g.lineWidth = 2;
+    g.strokeStyle = 'rgba(120,105,80,.55)';
+    g.lineWidth = 1.5;
     roundRect(g, x + p + 1, y + p + 1, s - 2, s - 2, 9);
     g.stroke();
 
     // 中心菱形，翻面时肉眼可辨
-    g.strokeStyle = '#5a6672';
+    g.strokeStyle = '#a99c85';
     g.lineWidth = 2;
     g.beginPath();
-    g.moveTo(x + CELL / 2, y + CELL / 2 - 12);
-    g.lineTo(x + CELL / 2 + 12, y + CELL / 2);
-    g.lineTo(x + CELL / 2, y + CELL / 2 + 12);
-    g.lineTo(x + CELL / 2 - 12, y + CELL / 2);
+    g.moveTo(x + CELL / 2, y + CELL / 2 - 11);
+    g.lineTo(x + CELL / 2 + 11, y + CELL / 2);
+    g.lineTo(x + CELL / 2, y + CELL / 2 + 11);
+    g.lineTo(x + CELL / 2 - 11, y + CELL / 2);
     g.closePath();
     g.stroke();
   }

@@ -3,7 +3,7 @@
  *
  * 设计约定（这是整个前端的地基）：
  *
- *   1. 没有网格。棋子位置是任意浮点世界坐标，不吸附、不取整。
+ *   1. 没有网格。物体位置是任意浮点世界坐标，不吸附、不取整。
  *      地图没有边界，平移可以无限继续。
  *
  *   2. 视变换只有一个： screen = world * s + t
@@ -11,7 +11,7 @@
  *
  *   3. 双层 Canvas：
  *        bg 层 = 静态参考物（原点准星），只在视变换变化时重绘
- *        fg 层 = 棋子/选中框，内容标脏时重绘
+ *        fg 层 = 物体/选中框，内容标脏时重绘
  *
  *   4. 绘制契约（drawFg 设定的坐标系）：
  *        g 已经 scale(view.s)，但 **没有** translate。
@@ -25,20 +25,24 @@
  *        交给 canvas 的永远是屏幕级的小数值，精度问题从根上消失。
  *
  *   5. 不跑常驻 rAF 循环。输入事件里标脏 + requestAnimationFrame 一次，
- *      画完即停。空转的 rAF 会让手机持续保持唤醒，与「CPU 日常接近 0」相悖。
+ *      画完即停。空转的 rAF 会让手机持续保持唤醒。
  *
  *   6. 分辨率封顶：canvas 物理像素 = CSS 像素 * min(dpr, cap)。
- *      小屏设备 cap=1.5，其余 cap=2。这是防显存溢出的关键一招。
+ *
+ *   7. **本层不知道「棋子」是什么。** 它只报告「在某个世界坐标命中了某个东西」
+ *      以及「拖拽产生了多少世界位移」，由调用方决定要移动谁。
+ *      多选整体移动就是这样实现的：一次拖拽 = 一个位移量，
+ *      调用方把这个位移应用到所有被选中的物体上。
  */
 (function (global) {
   'use strict';
 
-  // 无限地图放宽缩放范围：拉得很远也能看清全貌，凑近能看细节
   var MIN_SCALE = 0.02;
   var MAX_SCALE = 16;
 
-  var SLOP = 8;           // 超过这个位移才算拖动/平移，否则算点击
-  var TAP_MS = 320;       // 点击判定时限
+  var SLOP = 6;           // 超过这个位移才算拖动/平移，否则算点击
+  var TAP_MS = 400;       // 点击判定时限
+  var LONGPRESS_MS = 420; // 长按判定时限（触屏上加选/减选）
   var ORIGIN_MARK = 14;   // 原点准星的臂长（屏幕像素）
 
   // 小屏设备降低 DPR 上限，直接砍掉大半填充率
@@ -58,7 +62,7 @@
     var fctx = fg.getContext('2d');
 
     var drawer = null;    // function(g, view)  坐标系见文件头第 4 条
-    var hitTest = null;   // function(wx, wy) -> 命中对象或 null
+    var hitTest = null;   // function(wx, wy) -> 命中的对象或 null
 
     var dpr = 1;
     var size = { w: 0, h: 0 };
@@ -99,7 +103,7 @@
     function fitBounds(x0, y0, x1, y1) {
       if (x0 == null) { resetView(); return; }
 
-      var pad = 40;
+      var pad = 48;
       var w = Math.max(x1 - x0, 1);
       var h = Math.max(y1 - y0, 1);
       var s = Math.min((size.w - pad * 2) / w, (size.h - pad * 2) / h);
@@ -155,7 +159,7 @@
       if (sx < -ORIGIN_MARK || sy < -ORIGIN_MARK ||
           sx > size.w + ORIGIN_MARK || sy > size.h + ORIGIN_MARK) return;
 
-      g.strokeStyle = '#2b3138';
+      g.strokeStyle = opts.originColor || '#d6cfbe';
       g.lineWidth = 1;
       g.beginPath();
       g.moveTo(Math.round(sx) - ORIGIN_MARK + 0.5, Math.round(sy) + 0.5);
@@ -241,25 +245,52 @@
 
       if (pointers.size === 1) {
         var w = screenToWorld(p.x, p.y);
+        var hit = hitTest ? hitTest(w.x, w.y) : null;
+
         gest = {
           mode: null,                 // null | 'pan' | 'drag' | 'pinch'
           multi: false,
+          lpFired: false,
+          lpTimer: 0,
           sx0: p.x, sy0: p.y,
+          w0: { x: w.x, y: w.y },     // 拖拽起点的世界坐标
           t0: { x: view.tx, y: view.ty },
           s0: view.s, m0: { x: 0, y: 0 }, d0: 0,
-          piece: hitTest ? hitTest(w.x, w.y) : null,
+          hit: hit,
           tStart: nowMs()
         };
+
+        // 长按：触屏上没有 shift，用它来加选/减选。
+        // 只有按在东西上才计时 —— 空白处长按没有意义，
+        // 而且会挡住「长按空白然后拖动平移」。
+        if (hit && opts.onLongPress) {
+          var g0 = gest;
+          g0.lpTimer = global.setTimeout(function () {
+            g0.lpTimer = 0;
+            if (gest !== g0 || g0.mode) return;   // 已经变成拖拽/平移了
+            g0.lpFired = true;
+            opts.onLongPress(g0.hit);
+          }, LONGPRESS_MS);
+        }
+
         fg.classList.add('grabbing');
       } else if (pointers.size === 2 && gest) {
-        // 第二指落下：立刻放弃拖棋子，转缩放
-        if (gest.mode === 'drag' && gest.piece && opts.onDragEnd) {
-          opts.onDragEnd(gest.piece);
+        // 第二指落下：立刻放弃拖物体，转缩放
+        clearLp(gest);
+        if (gest.mode === 'drag' && opts.onDragEnd) {
+          opts.onDragEnd(gest.hit, gest.last || { x: 0, y: 0 }, true);
         }
         gest.multi = true;
         gest.mode = 'pinch';
-        gest.piece = null;
+        gest.hit = null;
         rebasePinch();
+      }
+    }
+
+    function clearLp(g) {
+      if (g && g.lpTimer) {
+        global.clearTimeout(g.lpTimer);
+        g.lpTimer = 0;
       }
     }
 
@@ -272,9 +303,13 @@
       /* --- 双指缩放 --- */
       if (pointers.size >= 2) {
         if (gest.mode !== 'pinch') {
+          clearLp(gest);
+          if (gest.mode === 'drag' && opts.onDragEnd) {
+            opts.onDragEnd(gest.hit, gest.last || { x: 0, y: 0 }, true);
+          }
           gest.multi = true;
           gest.mode = 'pinch';
-          gest.piece = null;
+          gest.hit = null;
           rebasePinch();
           return;
         }
@@ -303,10 +338,10 @@
 
       if (!gest.mode) {
         if (Math.abs(dx) < SLOP && Math.abs(dy) < SLOP) return;
-        gest.mode = gest.piece ? 'drag' : 'pan';
+        clearLp(gest);                       // 开始移动 -> 不再算长按
+        gest.mode = gest.hit ? 'drag' : 'pan';
         if (gest.mode === 'drag' && opts.onDragStart) {
-          var w0 = screenToWorld(gest.sx0, gest.sy0);
-          opts.onDragStart(gest.piece, w0.x, w0.y);
+          opts.onDragStart(gest.hit, gest.w0.x, gest.w0.y);
         }
       }
 
@@ -315,9 +350,13 @@
         view.ty = gest.t0.y + dy;
         syncOrigin();
         requestBg(); requestDraw();
-      } else if (gest.mode === 'drag' && gest.piece) {
+      } else if (gest.mode === 'drag') {
         var w = screenToWorld(p.x, p.y);
-        if (opts.onDragMove) opts.onDragMove(gest.piece, w.x, w.y);
+        // 只上报「世界位移」，不关心被拖的是谁 ——
+        // 多选整体移动靠的就是这个共享的位移量
+        var d2 = { x: w.x - gest.w0.x, y: w.y - gest.w0.y };
+        gest.last = d2;
+        if (opts.onDragMove) opts.onDragMove(gest.hit, w.x, w.y, d2.x, d2.y);
         requestDraw();
       }
     }
@@ -329,14 +368,16 @@
       try { fg.releasePointerCapture(e.pointerId); } catch (_) {}
       if (!gest) return;
 
+      clearLp(gest);
+
       // 双指 -> 单指：重设基准，且整段手势不再触发点击
       if (pointers.size === 1) {
-        if (gest.mode === 'drag' && gest.piece && opts.onDragEnd) {
-          opts.onDragEnd(gest.piece);
+        if (gest.mode === 'drag' && opts.onDragEnd) {
+          opts.onDragEnd(gest.hit, gest.last || { x: 0, y: 0 }, true);
         }
         gest.multi = true;
         gest.mode = null;
-        gest.piece = null;
+        gest.hit = null;
         var rest = firstPointer();
         gest.sx0 = rest.x; gest.sy0 = rest.y;
         gest.t0 = { x: view.tx, y: view.ty };
@@ -346,16 +387,18 @@
       }
 
       if (pointers.size === 0) {
-        var wasTap = !gest.mode && !gest.multi &&
+        // 长按已经处理过这次按下，抬指时不能再当成点击
+        var wasTap = !gest.mode && !gest.multi && !gest.lpFired &&
                      (nowMs() - gest.tStart) < TAP_MS;
 
-        if (gest.mode === 'drag' && gest.piece && opts.onDragEnd) {
-          opts.onDragEnd(gest.piece);
+        if (gest.mode === 'drag' && opts.onDragEnd) {
+          opts.onDragEnd(gest.hit, gest.last || { x: 0, y: 0 }, false);
         }
         fg.classList.remove('grabbing');
 
         var down = { x: gest.sx0, y: gest.sy0 };
-        var hit = gest.piece;
+        var hit = gest.hit;
+        var shift = !!e.shiftKey;      // 桌面端 shift+点击 = 加选
         gest = null;
 
         if (wasTap && opts.onTap) {
@@ -363,6 +406,7 @@
           opts.onTap({
             sx: down.x, sy: down.y,
             wx: w.x, wy: w.y,      // 精确浮点世界坐标，不取整
+            shiftKey: shift,
             hit: hit
           });
         }
@@ -392,7 +436,7 @@
       if (!opts.onContext) return;
       var p = localXY(e);
       var w = screenToWorld(p.x, p.y);
-      // shiftKey 必须显式往下传：调用方用它区分「翻面」和「旋转」，
+      // shiftKey 必须显式往下传：调用方用它区分不同操作，
       // 漏掉的话 shift+右键会退化成普通右键。
       opts.onContext({
         wx: w.x, wy: w.y,

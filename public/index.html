@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<meta name="theme-color" content="#15181c">
+<meta name="theme-color" content="#f5f1e8">
 <title>web-tts</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -23,12 +23,16 @@
   <span id="hud-seq">seq 0</span>
   <span class="sep">·</span>
   <span id="hud-pos">x 0.0  y 0.0</span>
+  <span class="sep">·</span>
+  <span id="hud-sel">未选中</span>
 </div>
 
 <div id="tools">
-  <button id="btn-flipall" type="button">全部翻面</button>
+  <button id="btn-all" type="button">全选</button>
+  <button id="btn-none" type="button">取消选择</button>
+  <button id="btn-flipall" type="button">翻面</button>
   <button id="btn-origin" type="button">回原点</button>
-  <button id="btn-fit" type="button">适配棋子</button>
+  <button id="btn-fit" type="button">适配</button>
 </div>
 
 <script src="atlas.js"></script>
