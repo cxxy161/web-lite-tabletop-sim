@@ -132,6 +132,37 @@
         return;
       }
 
+      // ---- 色板：给骰子/标记换色 ----
+      if (it.colors) {
+        var cw = document.createElement('div');
+        cw.className = 'menu-group';
+
+        var cl = document.createElement('div');
+        cl.className = 'menu-label';
+        cl.textContent = it.label;
+        cw.appendChild(cl);
+
+        var row = document.createElement('div');
+        row.className = 'color-row';
+        it.colors.forEach(function (c) {
+          var cb = document.createElement('button');
+          cb.type = 'button';
+          cb.className = 'swatch' + (c.value === it.value ? ' on' : '');
+          cb.title = c.name || '';
+          if (c.value) cb.style.background = c.hex;
+          else cb.textContent = '／';
+          cb.addEventListener('click', function (e) {
+            e.stopPropagation();
+            hide();
+            onPick(it.action, piece, c.value);
+          });
+          row.appendChild(cb);
+        });
+        cw.appendChild(row);
+        el.appendChild(cw);
+        return;
+      }
+
       // ---- 普通项 ----
       var b2 = document.createElement('button');
       b2.type = 'button';

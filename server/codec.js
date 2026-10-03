@@ -95,7 +95,9 @@ function encode(pieces, meta) {
       p.lk ? 1 : 0,              // 9: 冻结
       p.si | 0,                  // 10: 当前形态下标
       p.ds | 0,                  // 11: 骰子面数（0 = 非骰子）
-      p.v | 0                    // 12: 骰子当前点数
+      p.v | 0,                   // 12: 骰子当前点数
+      p.sh | 0,                  // 13: 标记形状（0 = 非标记）
+      p.c >>> 0                  // 14: 自定义颜色 0xRRGGBB（0 = 默认）
     ]);
 
     // 形态数组只对多形态棋子存（778 枚里只有 59 枚有）。
@@ -168,9 +170,12 @@ function decode(obj) {
     // 而且「下标越界」这条校验也永远不触发。
     const lk = r.length > 9 ? (r[9] ? 1 : 0) : 0;
     const si = r.length > 10 ? (r[10] | 0) : 0;
-    // 12/13 列是骰子（后加的字段，长度判断保证老存档仍可解）
+    // 12 列起是后来加的字段（骰子、标记）。全部用长度判断，
+    // 保证老存档（9 列 / 11 列）仍可解。
     const ds = r.length > 11 ? (r[11] | 0) : 0;
     const dv = r.length > 12 ? (r[12] | 0) : 0;
+    const sh = r.length > 13 ? (r[13] | 0) : 0;
+    const cl = r.length > 14 ? (r[14] >>> 0) : 0;
 
     const img = resolveTex(ai, '第 ' + i + ' 行');
     const bimg = resolveTex(bi, '第 ' + i + ' 行');
@@ -239,7 +244,9 @@ function decode(obj) {
       si,
       st,
       ds: [2, 4, 6, 10, 12].indexOf(ds) >= 0 ? ds : 0,
-      v: dv
+      v: dv,
+      sh: [1, 2, 3, 4].indexOf(sh) >= 0 ? sh : 0,
+      c: cl
     });
   }
 

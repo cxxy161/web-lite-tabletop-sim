@@ -37,6 +37,10 @@ const CLONE_OFFSET = 24;         // 克隆体的默认偏移（世界单位）
 const DICE_SIDES = [2, 4, 6, 10, 12];
 const DICE_SIZE = { 2: 44, 4: 46, 6: 48, 10: 52, 12: 56 };
 
+// 标记：形状白名单 + 世界边长。和骰子一样，只是为了观感有区分。
+const TOKEN_SHAPES = [1, 2, 3, 4];     // 方 / 圆 / 三角 / 星
+const TOKEN_SIZE = 40;
+
 class Room {
   constructor(id, opts) {
     this.id = id;
@@ -46,6 +50,7 @@ class Room {
     this.zSeq = 0;
     this.cloneSeq = 0;         // 克隆 id 分配器
     this.diceSeq = 0;          // 骰子 id 分配器
+    this.tokenSeq = 0;         // 标记 id 分配器
     this.clients = new Set();
     this.pieces = new Map();
     this.scene = '';             // 当前场景 slug
@@ -91,7 +96,9 @@ class Room {
         si: p.si | 0,              // 当前形态索引（st 的下标）
         st: Array.isArray(p.st) && p.st.length ? p.st : null,
         ds: DICE_SIDES.indexOf(p.ds | 0) >= 0 ? (p.ds | 0) : 0,   // 面数，0=非骰子
-        v: p.v | 0                 // 当前点数
+        v: p.v | 0,                // 当前点数
+        sh: TOKEN_SHAPES.indexOf(p.sh | 0) >= 0 ? (p.sh | 0) : 0, // 标记形状，0=非标记
+        c: p.c >>> 0               // 自定义颜色（0xRRGGBB，0=默认）
       };
       this.pieces.set(q.id, q);
       if (q.z > this.zSeq) this.zSeq = q.z;
@@ -99,6 +106,10 @@ class Room {
       if (q.ds) {
         const m = /^d(\d+)_/.exec(q.id);
         if (m) { const n = parseInt(m[1], 10); if (n > this.diceSeq) this.diceSeq = n; }
+      }
+      if (q.sh) {
+        const mk = /^k(\d+)_/.exec(q.id);
+        if (mk) { const n = parseInt(mk[1], 10); if (n > this.tokenSeq) this.tokenSeq = n; }
       }
     }
 
@@ -155,6 +166,7 @@ class Room {
       this.zSeq = maxZ;
       this.cloneSeq = d.cloneSeq | 0;
       this.diceSeq = d.diceSeq | 0;
+      this.tokenSeq = d.tokenSeq | 0;
       return true;
     } catch (_) {
       return false;
@@ -166,6 +178,7 @@ class Room {
       seq: this.seq,
       cloneSeq: this.cloneSeq,
       diceSeq: this.diceSeq,
+      tokenSeq: this.tokenSeq,
       scene: this.scene,
       label: this.label,
       pieces: Array.from(this.pieces.values())
@@ -212,6 +225,37 @@ class Room {
   // 一个 NaN 坐标会被静默当成 (0,0) 收下（Number('')/Number([]) 同理）。
   static _finite(v) {
     return typeof v === 'number' && Number.isFinite(v);
+  }
+
+  // 颜色归一成 0xRRGGBB 整数。0 = 用默认色。
+  //
+  // 存整数而不是 '#rrggbb'：存档的行是纯数字列式数组（见 codec.js），
+  // 塞字符串要另开字典表，而颜色取值本来就有限，整数最省。
+  // 非法输入一律回落到 0（默认色），不抛错 ——
+  // 颜色只是外观，不值得为它拒绝整个操作。
+  static _color(v) {
+    if (v == null) return 0;
+    if (typeof v === 'string') {
+      const m = /^#?([0-9a-fA-F]{6})$/.exec(v.trim());
+      return m ? (parseInt(m[1], 16) >>> 0) : 0;
+    }
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      const n = Math.floor(v);
+      if (n <= 0) return 0;
+      return (n & 0xffffff) >>> 0;
+    }
+    return 0;
+  }
+
+  // 角度归一：保留两位小数，与 codec / 前端一致（见 codec.js 的 normR）
+  static _normR(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    let m = n % 360;
+    if (m < 0) m += 360;
+    m = Math.round(m * 100) / 100;
+    if (m >= 360) m = 0;
+    return m;
   }
 
   /* ---------- op ---------- */
@@ -341,7 +385,9 @@ class Room {
           si: src.si | 0,
           st: src.st ? src.st.map((s) => ({ img: s.img, bimg: s.bimg, w: s.w, h: s.h })) : null,
           ds: src.ds | 0,
-          v: src.v | 0
+          v: src.v | 0,
+          sh: src.sh | 0,
+          c: src.c >>> 0
         };
         this.pieces.set(id, p);
 
@@ -380,13 +426,66 @@ class Room {
           z: ++this.zSeq,
           lk: 0, si: 0, st: null,
           ds: sides,
-          v: 1
+          v: 1,
+          sh: 0,
+          c: Room._color(op.c)
         };
         this.pieces.set(id, p);
 
         this.seq++;
         this.save();
         return { k: 'dice', piece: p };
+      }
+
+      // 加一个标记（方/圆/三角/星），同样就是棋子。
+      // 它是「指示物」性质 —— 桌游里常用来标目标点、范围、状态。
+      case 'token': {
+        const shape = TOKEN_SHAPES.indexOf(op.sh | 0) >= 0 ? (op.sh | 0) : 0;
+        if (!shape) return null;
+        if (!Room._finite(op.x) || !Room._finite(op.y)) return null;
+
+        const id = 'k' + (++this.tokenSeq) + '_' + shape;
+        if (this.pieces.has(id)) return null;
+
+        const sz = Room._finite(op.size) ? Math.max(8, Math.min(400, op.size)) : TOKEN_SIZE;
+        const p = {
+          id,
+          x: op.x, y: op.y,
+          r: Room._finite(op.r) ? Room._normR(op.r) : 0,
+          f: 0,
+          w: sz, h: sz,
+          img: 'white', bimg: 'white',   // 标记是画出来的
+          z: ++this.zSeq,
+          lk: 0, si: 0, st: null,
+          ds: 0, v: 0,
+          sh: shape,
+          c: Room._color(op.c)
+        };
+        this.pieces.set(id, p);
+
+        this.seq++;
+        this.save();
+        return { k: 'token', piece: p };
+      }
+
+      // 改颜色 / 改形状。骰子与标记都用它，方块和骰子都能换色。
+      case 'tint': {
+        const p = this.pieces.get(op.id);
+        if (!p || p.lk) return null;
+        if (!p.ds && !p.sh) return null;         // 只对骰子/标记有效
+
+        let changed = false;
+        if (op.c != null) { p.c = Room._color(op.c); changed = true; }
+        if (op.sh != null && p.sh) {
+          const ns = TOKEN_SHAPES.indexOf(op.sh | 0) >= 0 ? (op.sh | 0) : 0;
+          if (ns) { p.sh = ns; changed = true; }
+        }
+        if (!changed) return null;
+
+        p.z = ++this.zSeq;
+        this.seq++;
+        this.save();
+        return { k: 'tint', id: p.id, c: p.c, sh: p.sh, z: p.z };
       }
 
       // 掷骰。**点数由服务端随机** —— 若让客户端各摇各的，
@@ -440,4 +539,7 @@ class RoomStore {
   }
 }
 
-module.exports = { Room, RoomStore, SAVE_DEBOUNCE_MS, MAX_BATCH, CLONE_OFFSET, DICE_SIDES, DICE_SIZE };
+module.exports = {
+  Room, RoomStore, SAVE_DEBOUNCE_MS, MAX_BATCH, CLONE_OFFSET,
+  DICE_SIDES, DICE_SIZE, TOKEN_SHAPES, TOKEN_SIZE
+};

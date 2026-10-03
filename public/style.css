@@ -175,13 +175,52 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
 .menu-quick button:hover{background:#f0e9db}
 .menu-quick button:active{background:#e6dcc8}
 
-/* 加骰面板 */
-#dice-bar{
-  display:flex;align-items:center;gap:8px;
+/* ---------- 物品面板 ---------- */
+
+#items{
+  display:flex;flex-direction:column;gap:6px;
   padding-top:7px;
   border-top:1px solid var(--line);
 }
-#dice-bar[hidden]{display:none}
+#items[hidden]{display:none}
+
+.item-row{display:flex;gap:4px;flex-wrap:wrap}
+
+/* 可拖出的物品：图标 + 名称 */
+.item{
+  display:flex;flex-direction:column;align-items:center;gap:1px;
+  padding:3px 5px;
+  cursor:grab;
+  touch-action:none;          /* 交给 pointer 事件，别让浏览器滚页面 */
+  user-select:none;
+}
+.item:active{cursor:grabbing}
+.item canvas{display:block;pointer-events:none}
+.item{font-size:10px;color:var(--dim);line-height:1}
+
+/* 色板 */
+.color-row{display:flex;gap:4px;flex-wrap:wrap}
+.swatch{
+  width:22px;height:22px;padding:0;
+  border:1px solid var(--line-2);border-radius:5px;
+  cursor:pointer;
+  font-size:11px;line-height:1;color:var(--dim);
+  display:flex;align-items:center;justify-content:center;
+}
+.swatch.on{
+  border-color:var(--accent);
+  box-shadow:0 0 0 2px rgba(194,112,63,.28);
+}
+
+/* 拖拽时跟随指针的幽灵 */
+#ghost{
+  position:fixed;z-index:8;
+  width:44px;height:44px;
+  pointer-events:none;
+  opacity:.85;
+  filter:drop-shadow(0 3px 6px rgba(90,78,60,.30));
+}
+#ghost[hidden]{display:none}
 
 /* ---------- 存档 / 读档面板 ---------- */
 

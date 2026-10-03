@@ -55,6 +55,19 @@
   var order = [];
   var orderDirty = true;
 
+  // 骰子/标记共用的色板。0 = 用该物品的默认配色。
+  var PALETTE_LIST = [
+    { v: 0,        name: '默认' },
+    { v: 0xc2703f, name: '砖橙' },
+    { v: 0xb4453a, name: '红' },
+    { v: 0xd9a441, name: '金黄' },
+    { v: 0x5e8a4f, name: '绿' },
+    { v: 0x3a7bd5, name: '蓝' },
+    { v: 0x7a5ea8, name: '紫' },
+    { v: 0x4a4437, name: '墨' },
+    { v: 0xf2ede1, name: '米白' }
+  ];
+
   /* ---------- 骰子动画 ---------- */
 
   // id -> {t0, dur}。存在即表示这颗骰子正在滚。
@@ -200,7 +213,15 @@
         if (p.ds > 0) {
           // 进度在帧首统一算好（见上面），这里只查表
           var prog = diceProg.hasOwnProperty(p.id) ? diceProg[p.id] : null;
-          Dice.draw(g, cx, cy, p.w, p.ds, p.v, prog, dicePhase(p.id));
+          Dice.draw(g, cx, cy, p.w, p.ds, p.v, prog, dicePhase(p.id), p.c);
+          if (p.lk) strokeLock(g, cx - hw, cy - hh, p.w, p.h, s);
+          if (selection.has(p.id) && showRing) strokeSel(g, cx - hw, cy - hh, p.w, p.h, s);
+          continue;
+        }
+
+        // 标记同样是画出来的（方/圆/三角/星 + 自定义色）
+        if (p.sh > 0) {
+          Token.draw(g, cx, cy, p.w, p.sh, p.c);
           if (p.lk) strokeLock(g, cx - hw, cy - hh, p.w, p.h, s);
           if (selection.has(p.id) && showRing) strokeSel(g, cx - hw, cy - hh, p.w, p.h, s);
           continue;
@@ -338,6 +359,20 @@
       net.send({ t: 'op', op: { k: 'clone', id: op.id, x: c.x, y: c.y } });
       return;
     }
+    // dice / token **也带坐标**，同样必须换回原始坐标再发。
+    // 漏掉这一条时：本地按显示坐标保存，服务端按原始坐标广播，
+    // 于是同一位置在别人屏幕上（y 符号相反）会镜像到另一侧 ——
+    // 自己看着对、别人看着错，属于最难当场发现的一类。
+    if (op.k === 'dice' || op.k === 'token') {
+      var p2 = mapPt(op.x, op.y);
+      var out = { k: op.k, x: p2.x, y: p2.y };
+      if (op.k === 'dice') out.ds = op.ds; else out.sh = op.sh;
+      if (op.c) out.c = op.c;
+      if (typeof op.size === 'number') out.size = op.size;
+      if (typeof op.r === 'number') out.r = op.r;
+      net.send({ t: 'op', op: out });
+      return;
+    }
     net.send({ t: 'op', op: op });
   }
 
@@ -377,6 +412,17 @@
       selection.clear();
       selection.add(np.id);
       syncHudSel();
+      return;
+    }
+
+    // 新标记：服务端回完整棋子对象（原始坐标）
+    if (op.k === 'token' && op.piece) {
+      var kp = Object.assign({}, op.piece);
+      var kw = mapPt(kp.x, kp.y);
+      kp.x = kw.x; kp.y = kw.y;
+      pieces.set(kp.id, kp);
+      if (typeof kp.z === 'number' && kp.z > zMax) zMax = kp.z;
+      orderDirty = true;
       return;
     }
 
@@ -427,6 +473,10 @@
     // 用 |0 取整会把它们静默抹平（服务端也是同样精度）。
     else if (op.k === 'rot') q.r = normR(op.r);
     else if (op.k === 'lock') q.lk = op.lk ? 1 : 0;
+    else if (op.k === 'tint') {
+      if (typeof op.c === 'number') q.c = op.c >>> 0;
+      if (op.sh) q.sh = op.sh | 0;
+    }
     else if (op.k === 'state') {
       q.si = op.si | 0;
       q.img = op.img; q.bimg = op.bimg;
@@ -828,26 +878,23 @@
 
   /* ---------- 工具按钮 ---------- */
 
-  document.getElementById('btn-fit').addEventListener('click', fitPieces);
+  // 工具栏精简后只剩「框选 / 物品 / 原点 / 设置」。
+  // 原来的全选、取消、翻面、掷骰、适配、存读档按钮都撤了：
+  //   - 全选/取消：Ctrl+A / Esc，以及点空白处取消
+  //   - 翻面：棋子菜单
+  //   - 掷骰：骰子自己的菜单
+  //   - 适配：改由双击空白处触发（见下面的 dblclick）
+  //   - 存读档：移进设置面板
   document.getElementById('btn-origin').addEventListener('click', function () {
     board.resetView();
   });
 
-  document.getElementById('btn-all').addEventListener('click', function () {
-    selection.clear();
-    pieces.forEach(function (p) { selection.add(p.id); });
-    syncHudSel();
-    board.requestDraw();
-  });
-
-  document.getElementById('btn-none').addEventListener('click', clearSelection);
-
-  document.getElementById('btn-flipall').addEventListener('click', function () {
-    // 只翻选中的；没有选择时翻全部
-    var list = selection.size ? selectedPieces() : Array.from(pieces.values());
-    list.forEach(function (p) {
-      commit({ k: 'flip', id: p.id, f: p.f ? 0 : 1 });
-    });
+  // 桌面端用双击空白处当作「适配全部」，补上撤掉的按钮
+  document.getElementById('fg').addEventListener('dblclick', function (e) {
+    var w = board.screenToWorld(e.clientX, e.clientY);
+    // 点在有东西上就不算（那是双双击，避免误触）
+    if (pick(w.x, w.y)) return;
+    fitPieces();
   });
 
   /* ---------- 键盘 ---------- */
@@ -857,6 +904,21 @@
 
     if (e.key === '0') { board.resetView(); return; }
     if (e.key === 'Escape') { clearSelection(); return; }
+    // f = 适配全部（工具栏那个按钮撤了）
+    if (e.key === 'f' && !selection.size) { fitPieces(); return; }
+    // R = 掷骰：优先掷选中的骰子，否则掷场上全部
+    if (e.key === 'R') {
+      var rollIds = [];
+      selection.forEach(function (id) {
+        var p = pieces.get(id);
+        if (p && p.ds > 0 && !p.lk) rollIds.push(id);
+      });
+      if (!rollIds.length) {
+        pieces.forEach(function (p) { if (p.ds > 0 && !p.lk) rollIds.push(p.id); });
+      }
+      if (rollIds.length) rollDice(rollIds);
+      return;
+    }
     if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       selection.clear();
@@ -929,6 +991,29 @@
     if (isDice) {
       items.push({ action: 'roll', label: '掷骰' + suffix });
       items.push({ sep: true });
+      items.push(colorItem(one));
+      items.push({ sep: true });
+      items.push({ action: 'lock', label: allLocked ? ('解冻' + suffix) : ('固定（冻结）' + suffix) });
+      items.push({ action: 'clone', label: '克隆' + suffix });
+      items.push({ action: 'del', label: '删除' + suffix, danger: true });
+      menu.show(piece, items, at);
+      return;
+    }
+
+    // ---- 标记：方/圆/三角/星可切换，也能改色 ----
+    var isToken = sel.every(function (p) { return p.sh > 0; });
+    if (isToken) {
+      items.push({
+        radio: true,
+        action: 'reshape',
+        label: '形状' + (many ? '（统一改）' : ''),
+        options: Token.SHAPES.map(function (sh) {
+          return { value: sh.id, label: sh.name, note: sh.id === one.sh ? ' 当前' : '' };
+        }),
+        value: one.sh
+      });
+      items.push(colorItem(one));
+      items.push({ sep: true });
       items.push({ action: 'lock', label: allLocked ? ('解冻' + suffix) : ('固定（冻结）' + suffix) });
       items.push({ action: 'clone', label: '克隆' + suffix });
       items.push({ action: 'del', label: '删除' + suffix, danger: true });
@@ -994,6 +1079,21 @@
     menu.show(piece, items, at);
   }
 
+  // 菜单里的色板项
+  function colorItem(one) {
+    // 注意键名：menu.js 用 `colors` 数组的存在与否来识别色板项，
+    // 所以这里只能有一个 colors（早期写成布尔 + 数组两个同名键，
+    // 前者被后者覆盖，属于能跑但会误导人的写法）。
+    return {
+      action: 'tint',
+      label: '颜色',
+      value: (one.c >>> 0),
+      colors: PALETTE_LIST.map(function (c) {
+        return { value: c.v, name: c.name, hex: c.v ? Token.intToHex(c.v) : null };
+      })
+    };
+  }
+
   function doAction(action, piece, value) {
     var sel = selectedPieces();
     if (!sel.length) return;
@@ -1022,6 +1122,25 @@
           if (p.lk || !p.st || p.st.length < 2) return;
           if (si < 0 || si >= p.st.length) return;
           commit({ k: 'state', id: p.id, si: si });
+        });
+        break;
+      }
+
+      // 改颜色：骰子与标记通用
+      case 'tint':
+        sel.forEach(function (p) {
+          if ((p.ds > 0 || p.sh > 0) && !p.lk) {
+            commit({ k: 'tint', id: p.id, c: value >>> 0 });
+          }
+        });
+        break;
+
+      // 改标记形状
+      case 'reshape': {
+        var sh = value | 0;
+        if (!sh) break;
+        sel.forEach(function (p) {
+          if (p.sh > 0 && !p.lk) commit({ k: 'tint', id: p.id, sh: sh });
         });
         break;
       }
@@ -1137,51 +1256,181 @@
   });
   // 桌面端按住 Shift 也能框选，与绘图软件习惯一致（见 board.js）
 
-  /* ---------- 骰子按钮 ---------- */
+  /* ---------- 物品面板（拖到桌面放下） ---------- */
 
-  var elDiceBar = document.getElementById('dice-bar');
-  var elDiceOpts = document.getElementById('dice-opts');
-  var elDiceBtn = document.getElementById('btn-dice');
+  var elItems = document.getElementById('items');
+  var elItemsBtn = document.getElementById('btn-items');
+  var elItemDice = document.getElementById('item-dice');
+  var elItemTokens = document.getElementById('item-tokens');
+  var elItemColors = document.getElementById('item-colors');
+  var elGhost = document.getElementById('ghost');
 
-  elDiceBtn.addEventListener('click', function () {
-    elDiceBar.hidden = !elDiceBar.hidden;
-    elDiceBtn.className = elDiceBar.hidden ? '' : 'on';
+  // 当前选中的颜色（0 = 默认配色）。骰子和标记共用同一个色板。
+  var itemColor = 0;
+
+  var PALETTE = PALETTE_LIST;
+
+  elItemsBtn.addEventListener('click', function () {
+    elItems.hidden = !elItems.hidden;
+    elItemsBtn.className = elItems.hidden ? '' : 'on';
   });
 
-  // 「加骰」面板列出 d2/d4/d6/d10/d12
+  // ---- 色板 ----
+  PALETTE.forEach(function (c) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'swatch' + (c.v === itemColor ? ' on' : '');
+    b.dataset.color = String(c.v);
+    b.title = c.name;
+    var hex = c.v ? Token.intToHex(c.v) : '';
+    // 「默认」用斜线表示「不指定颜色」
+    b.style.background = c.v ? hex : 'transparent';
+    if (!c.v) b.textContent = '／';
+    b.addEventListener('click', function () {
+      itemColor = c.v;
+      var all = elItemColors.children;
+      for (var i = 0; i < all.length; i++) {
+        all[i].className = 'swatch' + (Number(all[i].dataset.color) === itemColor ? ' on' : '');
+      }
+      // 同时改选中的骰子/标记，方便「先选再改色」
+      var sel = selectedPieces();
+      var n = 0;
+      sel.forEach(function (p) {
+        if ((p.ds > 0 || p.sh > 0) && !p.lk) { commit({ k: 'tint', id: p.id, c: itemColor }); n++; }
+      });
+      if (n) flashNote('已给选中的 ' + n + ' 个物品改色');
+    });
+    elItemColors.appendChild(b);
+  });
+
+  function flashNote(text) {
+    var el = document.getElementById('items-note');
+    if (!el) return;
+    el.textContent = text;
+    global.setTimeout(function () {
+      el.innerHTML = '选好颜色后，把上面的物品<b>拖到桌面</b>即可放下；直接点也能放到视图中心。';
+    }, 2200);
+  }
+
+  // ---- 可拖出的物品 ----
+  //
+  // 交互：从面板按下 -> 出现跟随鼠标的「幽灵」-> 松手在桌面上就放下。
+  // 手机上 pointer 事件同样可用（手指拖出去松手）。
+  function makeDraggable(btn, spec) {
+    var dragging = false;
+
+    btn.addEventListener('pointerdown', function (e) {
+      // 点在按钮上就准备拖，但也要允许「只是点一下」（放到视图中心）
+      dragging = true;
+      btn._start = { x: e.clientX, y: e.clientY };
+      try { btn.setPointerCapture(e.pointerId); } catch (_) {}
+    });
+
+    btn.addEventListener('pointermove', function (e) {
+      if (!dragging) return;
+      var dx = e.clientX - btn._start.x, dy = e.clientY - btn._start.y;
+      if (!btn._ghostOn && Math.abs(dx) + Math.abs(dy) < 6) return;
+
+      if (!btn._ghostOn) { btn._ghostOn = true; elGhost.hidden = false; }
+      paintGhost(spec);
+      elGhost.style.left = (e.clientX - 22) + 'px';
+      elGhost.style.top = (e.clientY - 22) + 'px';
+      e.preventDefault();
+    });
+
+    function finish(e) {
+      if (!dragging) return;
+      dragging = false;
+      var wasGhost = btn._ghostOn;
+      btn._ghostOn = false;
+      elGhost.hidden = true;
+
+      // 幽灵没出现过 = 只是点了一下 -> 放到视图中心
+      var wx, wy;
+      if (wasGhost) {
+        // 松手位置换算成世界坐标。注意面板区域也算「桌面」——
+        // 松在面板上等于放弃，避免误放。
+        var r = document.getElementById('panel').getBoundingClientRect();
+        if (e.clientX >= r.left && e.clientX <= r.right &&
+            e.clientY >= r.top && e.clientY <= r.bottom) return;
+        var w = board.screenToWorld(e.clientX, e.clientY);
+        wx = w.x; wy = w.y;
+      } else {
+        var c = board.screenToWorld(board.size.w / 2, board.size.h / 2);
+        wx = c.x; wy = c.y;
+      }
+
+      dropItem(spec, wx, wy);
+    }
+
+    btn.addEventListener('pointerup', finish);
+    btn.addEventListener('pointercancel', function () {
+      dragging = false; btn._ghostOn = false; elGhost.hidden = true;
+    });
+  }
+
+  // 幽灵里画一个该物品的缩略图（直接复用画布渲染器）
+  function paintGhost(spec) {
+    var size = 44;
+    elGhost.width = size; elGhost.height = size;
+    var g = elGhost.getContext('2d');
+    g.clearRect(0, 0, size, size);
+    if (spec.kind === 'dice') Dice.draw(g, size / 2, size / 2 + 2, size * 0.72, spec.ds, Math.min(3, spec.ds), null, 5, itemColor);
+    else Token.draw(g, size / 2, size / 2 + 2, size * 0.62, spec.sh, itemColor);
+  }
+
+  function dropItem(spec, wx, wy) {
+    if (spec.kind === 'dice') {
+      commit({ k: 'dice', ds: spec.ds, x: wx, y: wy, c: itemColor });
+    } else {
+      commit({ k: 'token', sh: spec.sh, x: wx, y: wy, c: itemColor });
+    }
+    // 放下后自动收起面板，避免挡住刚放的东西
+    elItems.hidden = true;
+    elItemsBtn.className = '';
+  }
+
+  // 骰子 d2..d12
   Dice.SIDES.forEach(function (ds) {
     var b = document.createElement('button');
     b.type = 'button';
-    b.textContent = 'd' + ds;
-    b.addEventListener('click', function () {
-      addDice(ds);
-      elDiceBar.hidden = true;
-      elDiceBtn.className = '';
-    });
-    elDiceOpts.appendChild(b);
+    b.className = 'item';
+    b.title = '拖到桌面放下 d' + ds;
+
+    // 按钮里直接画一颗小骰子当图标
+    var cv = document.createElement('canvas');
+    cv.width = 34; cv.height = 34;
+    var g = cv.getContext('2d');
+    Dice.draw(g, 17, 18, 26, ds, Math.min(3, ds), null, ds, 0);
+    b.appendChild(cv);
+    b.appendChild(document.createTextNode('d' + ds));
+
+    makeDraggable(b, { kind: 'dice', ds: ds });
+    elItemDice.appendChild(b);
   });
 
-  // 「掷骰」：掷选中的骰子；没选中骰子就掷场上全部骰子。
-  // 桌面上更常见的用法是「一把全掷」，所以没选时不该什么都不做。
-  document.getElementById('btn-roll').addEventListener('click', function () {
-    var ids = [];
-    selection.forEach(function (id) {
-      var p = pieces.get(id);
-      if (p && p.ds > 0 && !p.lk) ids.push(id);
-    });
-    if (!ids.length) {
-      pieces.forEach(function (p) {
-        if (p.ds > 0 && !p.lk) ids.push(p.id);
-      });
-    }
-    if (!ids.length) {
-      addDice(6);          // 场上一颗都没有：直接给一颗 d6
-      return;
-    }
-    rollDice(ids);
+  // 标记：方 / 圆 / 三角 / 星
+  Token.SHAPES.forEach(function (sh) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'item';
+    b.title = '拖到桌面放下' + sh.name + '标记';
+
+    var cv = document.createElement('canvas');
+    cv.width = 34; cv.height = 34;
+    var g = cv.getContext('2d');
+    Token.draw(g, 17, 18, 26, sh.id, 0);
+    b.appendChild(cv);
+    b.appendChild(document.createTextNode(sh.name));
+
+    makeDraggable(b, { kind: 'token', sh: sh.id });
+    elItemTokens.appendChild(b);
   });
 
-  /* ---------- 启动 ---------- */
+  // 「掷骰」动作：双击骰子即可掷（骰子自己的菜单里也有）。
+  // 键盘 R 也能掷选中的骰子，补上撤掉的工具栏按钮。
+
+  /* ---------- 启动 ---------- */  /* ---------- 启动 ---------- */
 
   board.resetView();
   syncHud();
@@ -1206,6 +1455,7 @@
     // 诊断 / 测试用：外部直接改 pieces 后必须调它，否则顺序缓存是旧的，
     // pick 会拿不到刚插入的棋子。（产品代码永远走 applyOp，那里会自己标脏。）
     touch: function () { orderDirty = true; board.requestDraw(); },
+    color: function () { return itemColor; },
     diceAnim: function () { return diceAnim; }
   };
 })(window);

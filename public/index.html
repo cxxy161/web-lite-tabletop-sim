@@ -35,23 +35,28 @@
   </div>
 
   <div id="tools">
-    <button id="btn-all" type="button">全选</button>
-    <button id="btn-none" type="button">取消</button>
     <button id="btn-marquee" type="button">框选</button>
-    <button id="btn-flipall" type="button">翻面</button>
-    <button id="btn-roll" type="button">掷骰</button>
+    <button id="btn-items" type="button">物品</button>
     <button id="btn-origin" type="button">原点</button>
-    <button id="btn-fit" type="button">适配</button>
-    <button id="btn-saves" type="button">存档</button>
-    <button id="btn-load" type="button">读档</button>
-    <button id="btn-dice" type="button">加骰</button>
     <button id="btn-settings" type="button">设置</button>
   </div>
 
-  <!-- 加骰：选面数 -->
-  <div id="dice-bar" hidden>
-    <span class="set-label">加骰子</span>
-    <div id="dice-opts" class="set-seg"></div>
+  <!-- 物品：从这里把骰子/标记拖到桌面上 -->
+  <div id="items" hidden>
+    <div class="set-row">
+      <span class="set-label">骰子</span>
+      <div id="item-dice" class="item-row"></div>
+    </div>
+    <div class="set-row">
+      <span class="set-label">标记</span>
+      <div id="item-tokens" class="item-row"></div>
+    </div>
+
+    <div class="set-row">
+      <span class="set-label">颜色</span>
+      <div id="item-colors" class="color-row"></div>
+    </div>
+    <div class="set-note" id="items-note">选好颜色后，把上面的物品<b>拖到桌面</b>即可放下；直接点也能放到视图中心。</div>
   </div>
 
   <div id="settings" hidden>
@@ -66,9 +71,21 @@
       <div id="map-modes" class="set-seg"></div>
     </div>
     <div id="map-note" class="set-note"></div>
+
+    <div class="set-row">
+      <span class="set-label">存档</span>
+      <div class="set-seg">
+        <button id="btn-saves" type="button">导出</button>
+        <button id="btn-load" type="button">导入</button>
+      </div>
+    </div>
+    <div class="set-note">导出得到 base64 文本，复制走即可；导入把文本粘回来。<b>不写文件</b>。</div>
   </div>
 
 </div>
+
+<!-- 物品拖拽时的跟随幽灵。必须是 canvas：paintGhost 要在上面画缩略图 -->
+<canvas id="ghost" width="44" height="44" hidden></canvas>
 
 <!-- 棋子菜单（桌面右键 / 手机长按） -->
 <div id="menu" hidden></div>
@@ -96,8 +113,10 @@
 <script src="board.js"></script>
 <script src="texture.js"></script>
 <script src="net.js"></script>
+<script src="color.js"></script>
 <script src="settings.js"></script>
 <script src="dice.js"></script>
+<script src="token.js"></script>
 <script src="menu.js"></script>
 <script src="saves.js"></script>
 <script src="app.js"></script>

@@ -34,6 +34,11 @@
     return STYLE[sides] || STYLE[6];
   }
 
+  function intToHex(v) {
+    if (!v) return null;
+    return '#' + ('000000' + (v >>> 0).toString(16)).slice(-6);
+  }
+
   // 多边形顶点（单位半径），各形状的点分布
   function points(shape) {
     switch (shape) {
@@ -79,9 +84,25 @@
   /**
    * @param prog 0..1 的滚动进度；null 或 >=1 表示已停稳
    * @param seed 每颗骰子一个固定值，让它们的旋转相位不同
+   * @param colorInt 自定义底色（0 = 用该面数的默认配色）
    */
-  function draw(g, cx, cy, size, sides, value, prog, seed) {
+  function draw(g, cx, cy, size, sides, value, prog, seed, colorInt) {
     var st = styleOf(sides);
+
+    // 自定义颜色只换「底色」，描边与数字色由底色推导 ——
+    // 让使用者只挑一个颜色，否则浅色配白边、深色配黑字会脏得没法看。
+    if (colorInt) {
+      var CU = global.ColorUtil;
+      var hex = intToHex(colorInt);
+      if (hex && CU) {
+        st = {
+          shape: st.shape,
+          tint: hex,
+          edge: CU.shade(hex, 0.68),
+          ink: CU.lum(hex) > 0.55 ? CU.shade(hex, 0.32) : '#fffdf8'
+        };
+      }
+    }
     var r = size / 2;
     var rolling = (prog != null && prog < 1);
 
