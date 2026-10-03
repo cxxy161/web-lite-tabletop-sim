@@ -472,6 +472,23 @@
       return;
     }
 
+    // 层级调整：服务端回 [{id, z}]。
+    //
+    // 注意 z 可能**是负数**（置底时会取「比当前最小值再小」），
+    // 所以不能沿用 move 那句 `if (it.z > zMax) zMax = it.z` 的假设。
+    // zMax 只管「本地乐观计数」，实际顺序由 z 排序决定。
+    if (op.k === 'z' && Array.isArray(op.list)) {
+      for (var zi = 0; zi < op.list.length; zi++) {
+        var zit = op.list[zi];
+        var zp = pieces.get(zit.id);
+        if (!zp || typeof zit.z !== 'number') continue;
+        zp.z = zit.z;
+        if (zit.z > zMax) zMax = zit.z;
+      }
+      orderDirty = true;
+      return;
+    }
+
     // 克隆：服务端回了完整棋子对象（原始坐标），转成显示坐标后入库
     if (op.k === 'clone' && op.piece) {
       var np = Object.assign({}, op.piece);
@@ -1093,21 +1110,6 @@
     if (e.key === 'Escape') { clearSelection(); return; }
     // f = 适配全部（工具栏那个按钮撤了）
     if (e.key === 'f' && !selection.size) { fitPieces(); return; }
-    // 掷骰：d（dice）或 R。优先掷选中的骰子，否则掷场上全部。
-    // 保留 R 是历史习惯，d 更好记 —— 两个都认，不必二选一。
-    if (e.key === 'd' || e.key === 'R') {
-      var rollIds = [];
-      selection.forEach(function (id) {
-        var p = pieces.get(id);
-        if (p && p.ds > 0 && !p.lk) rollIds.push(id);
-      });
-      if (!rollIds.length) {
-        pieces.forEach(function (p) { if (p.ds > 0 && !p.lk) rollIds.push(p.id); });
-      }
-      if (rollIds.length) { e.preventDefault(); rollDice(rollIds); }
-      return;
-    }
-
     // 删除：Delete / Backspace（和文件管理器一致）。
     // 会走二次确认，与菜单里的删除同一路径。
     if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -1151,12 +1153,29 @@
 
     if (!selection.size) return;
 
-    // f = 翻面。**对全部选中项生效**，不是只翻第一枚 ——
-    // 原来写的是 pieces.get(第一枚)，选中十张牌按 f 只翻一张，
-    // 而菜单里的「翻面」是批量，两处行为不一致最容易让人困惑。
+    // f = 翻面；**选中的都是骰子时，f = 掷骰**。
+    //
+    // 为什么不给掷骰单独一个键：之前用 d 和 R，其中 R 与旋转的 r
+    // 只差一个 Shift，同一个字母两种含义非常反直觉。
+    // 现在按「选中的是什么」决定 f 做什么 —— 桌面上「选中骰子然后
+    // 按一下」本来就是最自然的掷骰动作，不需要记第二个键。
+    //
+    // 翻面**对全部选中项生效**（原来只翻第一枚，而菜单里的「翻面」
+    // 是批量，两处行为不一致最容易让人困惑）。
     if (e.key === 'f') {
       e.preventDefault();
-      selectedPieces().forEach(function (p) {
+      var selList = selectedPieces();
+      if (!selList.length) return;
+
+      var allDice = selList.every(function (p) { return p.ds > 0; });
+      if (allDice) {
+        var rollIds = selList.filter(function (p) { return !p.lk; })
+                             .map(function (p) { return p.id; });
+        if (rollIds.length) rollDice(rollIds);
+        return;
+      }
+
+      selList.forEach(function (p) {
         if (!p.lk) commit({ k: 'flip', id: p.id, f: p.f ? 0 : 1 });
       });
       return;
@@ -1227,6 +1246,8 @@
       items.push({ sep: true });
       items.push(sizeItem(one));
       items.push(colorItem(one));
+      items.push(sizeItem(one));
+      layerItems(suffix).forEach(function (x) { items.push(x); });
       items.push({ sep: true });
       items.push({ action: 'lock', label: allLocked ? ('解冻' + suffix) : ('固定（冻结）' + suffix) });
       items.push({ action: 'clone', label: '克隆' + suffix });
@@ -1260,6 +1281,7 @@
       }
       items.push(sizeItem(one));
       items.push(colorItem(one));
+      layerItems(suffix).forEach(function (x) { items.push(x); });
       items.push({ sep: true });
       items.push({ action: 'lock', label: allLocked ? ('解冻' + suffix) : ('固定（冻结）' + suffix) });
       items.push({ action: 'clone', label: '克隆' + suffix });
@@ -1272,6 +1294,9 @@
     // 大小对所有棋子开放（大板块要缩小、小卡片要放大）。
     // 多选时以第一枚的宽度为起点，各枚按自己的比例缩放。
     items.push(sizeItem(one));
+
+    // 层级
+    layerItems(suffix).forEach(function (x) { items.push(x); });
 
     // ---- 旋转：滑杆支持任意角度，不再是只能 90° 一档 ----
     //
@@ -1329,6 +1354,19 @@
     menu.show(piece, items, at);
   }
 
+  // 菜单里的层级项：置顶 / 置底
+  //
+  // 不做「输入任意 z」：z 是服务端的全序计数器，
+  // 让客户端指定数值等于把全序交出去，两端会打架。
+  // 「它不小心跑到最上面了，我要压回最底」这个需求，
+  // 两个语义动作就够了。
+  function layerItems(suffix) {
+    return [
+      { action: 'z-top', label: '置顶' + suffix },
+      { action: 'z-bottom', label: '置底' + suffix }
+    ];
+  }
+
   // 菜单里的大小滑杆
   function sizeItem(one) {
     return {
@@ -1337,6 +1375,9 @@
       label: '大小',
       // 上限要罩得住最大的底图板块（实测 w=768），否则拉不满
       min: 8, max: 1600, step: 1,
+      // 对数轴：8~1600 是 200 倍跨度，线性轴下常用尺寸
+      // 全挤在左边一小段，根本没法微调（见 menu.js 的注释）
+      log: true,
       value: Math.round(one.w)
     };
   }
@@ -1436,6 +1477,17 @@
             commit({ k: 'edit', id: p.id, tx: txt });
           }
         });
+        break;
+      }
+
+      // 层级：置顶 / 置底。走服务端的 z op（它维护全序）。
+      case 'z-top':
+      case 'z-bottom': {
+        var ids = sel.filter(function (p) { return !p.lk; }).map(function (p) { return p.id; });
+        if (ids.length) {
+          commit({ k: 'z', list: ids.map(function (id) { return { id: id }; }),
+                   where: action === 'z-top' ? 'top' : 'bottom' });
+        }
         break;
       }
 

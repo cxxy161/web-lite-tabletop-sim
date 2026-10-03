@@ -151,15 +151,49 @@
         srow.className = 'menu-slider';
         var srng = document.createElement('input');
         srng.type = 'range';
-        srng.min = it.min; srng.max = it.max; srng.step = it.step || 1;
-        srng.value = it.value;
+
+        // **对数轴**。
+        //
+        // 物品尺寸跨度很大（8 ~ 1600，200 倍）。线性轴上的话，
+        // 全部实用尺寸（几十到两三百像素）挤在左边一小段里，
+        // 想从 40 调到 60 得跟像素级的手抖较劲；
+        // 而右边一大半行程只对应「巨大」那几个值。
+        //
+        // 对数轴下，滑杆每一格代表相同的**倍率**而不是相同的像素数，
+        // 放大和缩小的手感一致。
+        //
+        // 做法：滑杆本身走 0..1000 的「位置」，再换算成实际值
+        //   value = min * (max/min)^(pos/1000)
+        var LOG = !!it.log;
+        var SPAN = 1000;
+        var lo = it.min, hi = it.max;
+
+        function posToVal(pos) {
+          if (!LOG) return Number(pos);
+          return lo * Math.pow(hi / lo, Number(pos) / SPAN);
+        }
+        function valToPos(val) {
+          if (!LOG) return Number(val);
+          var v = Math.max(lo, Math.min(hi, Number(val)));
+          return Math.round(SPAN * Math.log(v / lo) / Math.log(hi / lo));
+        }
+
+        srng.min = LOG ? 0 : it.min;
+        srng.max = LOG ? SPAN : it.max;
+        srng.step = LOG ? 1 : (it.step || 1);
+        srng.value = valToPos(it.value);
+
+        var label = function (v) { return Math.round(v) + 'px'; };
+        sv.textContent = label(it.value);
+
         srng.addEventListener('input', function () {
-          sv.textContent = Math.round(srng.value) + 'px';
+          var v = posToVal(srng.value);
+          sv.textContent = label(v);
           // 实时预览：直接改本地的 w/h，不发 op（松手才发）
-          if (opts.onPreview) opts.onPreview(piece, Number(srng.value));
+          if (opts.onPreview) opts.onPreview(piece, v);
         });
         srng.addEventListener('change', function () {
-          onPick(it.action, piece, Number(srng.value));
+          onPick(it.action, piece, Math.round(posToVal(srng.value)));
         });
         srow.appendChild(srng);
         sw.appendChild(srow);

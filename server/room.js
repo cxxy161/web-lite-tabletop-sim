@@ -745,6 +745,72 @@ class Room {
         return { k: 'roll', list: out };
       }
 
+      /**
+       * 层级调整：把棋子放到最底 / 最顶。
+       *
+       * 为什么不做「设成任意 z」：z 是服务端的全序计数器，
+       * 让客户端指定数值等于把全序交给外部，两端会打架。
+       * 「置顶 / 置底」两个语义动作就够用了 ——
+       * 需求本身是「它不小心跑到最上面了，我要把它压回最底」。
+       *
+       * 实现上**不是只改这一个的 z**：
+       *   bottom -> 把它的 z 设成比当前最小还小
+       *   top    -> 设成比当前最大还大
+       * 这样其它棋子的相对顺序完全不动，只动了目标这一个。
+       * （如果改成「全部重排」，一次操作会让所有棋子的 z 都变，
+       *   别人那边的重绘范围会无谓地变大。）
+       */
+      case 'z': {
+        const list = Array.isArray(op.list) ? op.list : (op.id ? [{ id: op.id }] : null);
+        if (!list || !list.length || list.length > MAX_BATCH) return null;
+        const where = (op.where === 'bottom') ? 'bottom' : 'top';
+
+        // 先全量校验：有一项不存在就整批拒绝（和 move 同理）
+        for (let i = 0; i < list.length; i++) {
+          const it = list[i];
+          if (!it || typeof it !== 'object') return null;
+          const p = this.pieces.get(it.id);
+          if (!p || p.lk) return null;
+        }
+
+        let min = Infinity, max = -Infinity;
+        this.pieces.forEach((q) => {
+          if (q.z < min) min = q.z;
+          if (q.z > max) max = q.z;
+        });
+
+        const out = [];
+        if (where === 'bottom') {
+          // 依次排在现有最小值之下；多枚时保持传入顺序（后面的更上）
+          let z = min;
+          for (let i = list.length - 1; i >= 0; i--) {
+            const p = this.pieces.get(list[i].id);
+            p.z = --z;
+            out.push({ id: p.id, z: p.z });
+          }
+          out.reverse();
+          // 计数器不能倒退，否则后续「置顶」会撞上已有 z
+          this.zSeq = Math.max(this.zSeq, max);
+        } else {
+          let z = max;
+          for (let i = 0; i < list.length; i++) {
+            const p = this.pieces.get(list[i].id);
+            p.z = ++z;
+            out.push({ id: p.id, z: p.z });
+          }
+          // zSeq 只增不减：它可能因为之前的历史操作已经远大于 max，
+          // 直接赋值会让计数器倒退（虽然此刻不影响顺序，但下一次
+          // 「置顶」可能与已有 z 相撞）。
+          this.zSeq = Math.max(this.zSeq, z);
+        }
+
+        // 负 z 拉到底之后可能出现很大的负数，留出余量即可；
+        // 这里不重排，避免把别人的相对顺序也动了。
+        this.seq++;
+        this.save();
+        return { k: 'z', list: out, where: where };
+      }
+
       // 视野区增删改。
       //
       // **权限在 index.js 那层校验**（只有房主能改），这里只做数据。
