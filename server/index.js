@@ -27,6 +27,7 @@ const { SceneStore } = require('./scene');
 const {
   RoomRegistry, normCode, cleanName, cleanRoomName, MAX_PLAYERS, OFFLINE_GRACE_MS
 } = require('./rooms');
+const zones = require('./zones');
 const codec = require('./codec');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -243,6 +244,9 @@ async function handleRoomApi(req, res, urlPath, query) {
       return sendJson(res, 400, { error: '队伍不存在' });
     }
 
+    // 换队会改变「能看到什么」，所以广播完状态还要推一次可见性差分
+    const roomForVis = rooms.get(a.room.code);
+
     if (before !== teamId) {
       const who = a.room.get(target).name;
       const tname = teamId
@@ -254,6 +258,7 @@ async function handleRoomApi(req, res, urlPath, query) {
     }
 
     broadcastRoomState(a.room);
+    if (roomForVis) pushVisibility(roomForVis);
     return sendJson(res, 200, { ok: true, room: a.room.publicState() });
   }
 
@@ -444,12 +449,111 @@ function broadcast(room, obj) {
   });
 }
 
-function broadcastRoom(room, obj) {
-  const s = JSON.stringify(Object.assign({}, obj, room.snapshot()));
-  room.clients.forEach((c) => {
-    if (c.readyState === 1) {
-      try { c.send(s); } catch (_) {}
+/**
+ * 按连接裁剪一条 op。
+ *
+ * 返回 null 表示「这条 op 整条都不该发给你」。
+ * 返回对象表示可以发，但可能已被裁剪（比如批量 move 里滤掉了看不见的 id）。
+ *
+ * 逐 op 的处理策略：
+ *   move   批量里只保留你看得见的项；全被滤掉就整条不发
+ *   clone  新棋子若落在你看不见的区里 -> 不发
+ *   dice/token  同理（新物品可能造在隐藏区）
+ *   roll   同上，只发你看得见的骰子
+ *   zone   区域定义要过滤：hide 区对未授权者是保密的
+ *   其它（flip/rot/lock/edit/del/state）单棋子 op，看得见才发
+ *
+ * **注意 del**：棋子被删掉了就查不到它的位置，只能凭「之前是否
+ * 已下发过」判断 —— 这正是 seen 集合的用处。
+ */
+function filterOp(room, ws, op) {
+  if (!op || !op.k) return op;
+  const team = ws.teamId || null;
+  const canSee = (id) => {
+    const p = room.pieces.get(id);
+    if (!p) {
+      // 已经不在场上了（多半是 del）。用 seen 基线判断：
+      // 之前发过就允许通知删除，没发过就当它不存在。
+      const seen = room.seen.get(ws);
+      return !!(seen && seen.has(id));
     }
+    return zones.pieceFor(p, room.zoneList, team) !== null;
+  };
+
+  switch (op.k) {
+    case 'move': {
+      const list = (op.list || []).filter((it) => canSee(it.id));
+      if (!list.length) return null;
+      return { k: 'move', list: list };
+    }
+    case 'roll': {
+      const list = (op.list || []).filter((it) => canSee(it.id));
+      if (!list.length) return null;
+      return { k: 'roll', list: list };
+    }
+    case 'clone':
+    case 'dice':
+    case 'token': {
+      // 新物品的 id 在 piece 里；看不见就整条不发
+      const id = op.piece && op.piece.id;
+      if (id && !canSee(id)) return null;
+      return op;
+    }
+    case 'zone': {
+      // 区域列表按队伍过滤 —— hide 区对未授权者是保密的。
+      //
+      // **但房主必须看到自己建的全部区域**，否则他刚画完就看不到、
+      // 也没法删（实测踩到：房主建了 see:[] 的区，回包里 zone 是 null，
+      // 界面上列表空白，看起来像「画了没生效」）。
+      // 房主要管理规则，就不能被规则挡住。
+      const isOwner = !!(ws.isOwner);
+      const vis = (list) => isOwner ? (list || []) : zones.zoneList(list, team);
+
+      const zs = vis(op.zones || room.zoneList);
+      if (op.del) return { k: 'zone', del: true, id: op.id, zones: zs };
+      const az = op.zone ? vis([op.zone]) : [];
+      return { k: 'zone', zone: az[0] || null, zones: zs };
+    }
+    default: {
+      // 单棋子 op：看得见才发
+      if (op.id && !canSee(op.id)) return null;
+      return op;
+    }
+  }
+}
+
+/**
+ * 全量快照广播。
+ *
+ * **必须逐连接生成**（不再是共用一份字符串）—— 双盲要求每队看到的
+ * 盘面不同。共用字符串时，谁看不见什么就只能靠客户端自觉，
+ * 而客户端是拿得到全部数据的。
+ *
+ * 每个连接发完快照后，顺便把它的 `seen` 基线重置为「刚下发的集合」，
+ * 后续的可见集差分以此为准。
+ */
+function broadcastRoom(room, obj) {
+  room.clients.forEach((c) => {
+    if (c.readyState !== 1) return;
+    try {
+      c.send(JSON.stringify(Object.assign({}, obj, room.snapshotFor(c))));
+    } catch (_) {}
+  });
+}
+
+/**
+ * 把「可见集发生变化」推给受影响的连接。
+ *
+ * 场景：棋子被拖进/拖出隐藏区、区域被改动、玩家换了队伍。
+ * 没有这一步的话，移进隐藏区的棋子会**永远留在**对面屏幕上 ——
+ * 这是双盲最容易漏的一环。
+ */
+function pushVisibility(room) {
+  room.clients.forEach((c) => {
+    if (c.readyState !== 1) return;
+    const d = room.visibilityDiff(c);
+    if (!d) return;
+    try { c.send(JSON.stringify({ t: 'vis', add: d.add, remove: d.remove })); } catch (_) {}
   });
 }
 
@@ -466,6 +570,19 @@ function broadcastRoomState(meta) {
   if (!room) return;
 
   const base = meta.publicState();
+
+  // **广播前先把每个连接的 teamId 刷新一遍**。
+  // 双盲的判定依赖 c.teamId，如果换队后不更新它，
+  // 会出现「列表里我是红方、视野还是旧的」这种诡异状态。
+  // 顺带把已不在房间里的连接的基线清掉，避免 Map 泄漏。
+  room.clients.forEach((c) => {
+    const p = meta.get(c.playerId);
+    c.teamId = p ? (p.teamId || null) : null;
+    // 房主位也要同步给连接 —— 视野区的过滤要用它
+    c.isOwner = !!(p && p.owner);
+    if (!p) room.seen.delete(c);
+  });
+
   room.clients.forEach((c) => {
     if (c.readyState !== 1) return;
     const p = meta.get(c.playerId);
@@ -552,7 +669,11 @@ wss.on('connection', (ws, req) => {
   meta.setOnline(player.id, true);
 
   // 进场即全量快照。重连也走这条路 —— 所以这版不需要增量补发/重放机制。
-  send(ws, Object.assign({ t: 'init', room: roomId }, room.snapshot()));
+  // **必须用 snapshotFor(ws)**，不能用 snapshot() —— 后者是完整盘面，
+  // 会把隐藏区里的棋子一并下发，双盲当场失效。
+  ws.teamId = player.teamId || null;
+  ws.isOwner = !!player.owner;
+  send(ws, Object.assign({ t: 'init', room: roomId }, room.snapshotFor(ws)));
   // 房间状态（玩家列表 / 队伍）单独给：它是元数据，不是盘面
   send(ws, roomState(meta, player));
   peerCount(room);
@@ -569,12 +690,52 @@ wss.on('connection', (ws, req) => {
     try { m = JSON.parse(raw); } catch (_) { return; }
     if (!m || m.t !== 'op') return;
 
+    // 改视野区是**房主专属**：它是双盲规则的载体，
+    // 让任何人都能改等于让任何人都能给自己开视野。
+    if (m.op && m.op.k === 'zone') {
+      const meta2 = registry.get(code);
+      const me2 = meta2 && meta2.get(ws.playerId);
+      if (!me2 || !meta2.isOwner(me2.id)) {
+        send(ws, { t: 'log', kind: 'warn', text: '只有房主能调整视野区' });
+        return;
+      }
+    }
+
+    // 拦住会泄露「正面信息」的操作。
+    //
+    // 你能看到一枚棋子但只能看到背面（盲区）时，**翻面 / 切形态**
+    // 这类操作会让你间接读到正面 —— 比如连点形态看轮廓变化。
+    // 移动、冻结、删除是允许的：那些不泄露它是什么棋。
+    if (m.op && room.zoneList.length &&
+        (m.op.k === 'flip' || m.op.k === 'state')) {
+      const target = room.pieces.get(m.op.id);
+      if (target && !room.canSeeFull(ws, target)) {
+        send(ws, { t: 'log', kind: 'warn', text: '这枚棋子被遮挡，无法翻面/切换形态' });
+        return;
+      }
+    }
+
     const norm = room.applyOp(m.op);
     if (!norm) return;
 
     // 直接透传 applyOp 的返回值，不要手工挑字段：
     // move 带 list 数组（含服务端分配的 z），手挑字段会把 list 悄悄丢掉。
-    broadcast(room, { t: 'op', seq: room.seq, by: name, op: norm });
+    //
+    // 但**逐连接发**，因为 op 里可能带着看不见的棋子：
+    // 比如一次批量 move 里既有可见的也有隐藏区的，
+    // 或者别人移动了你看不见的棋子（那种情况整个 op 都不该发给你）。
+    const zoneOn = room.zoneList.length > 0;
+    room.clients.forEach((c) => {
+      if (c.readyState !== 1) return;
+      const filtered = zoneOn ? filterOp(room, c, norm) : norm;
+      if (!filtered) return;              // 整条 op 与你无关
+      try {
+        c.send(JSON.stringify({ t: 'op', seq: room.seq, by: name, op: filtered }));
+      } catch (_) {}
+    });
+
+    // 可见集可能变了（棋子进出隐藏区 / 区域本身被改动）
+    if (zoneOn) pushVisibility(room);
   });
 
   const leave = () => {

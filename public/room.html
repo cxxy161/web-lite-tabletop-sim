@@ -47,7 +47,25 @@
     <button id="btn-marquee" type="button">框选</button>
     <button id="btn-items" type="button">物品</button>
     <button id="btn-origin" type="button">原点</button>
+    <button id="btn-zone" type="button" hidden>视野区</button>
     <button id="btn-settings" type="button">设置</button>
+  </div>
+
+  <!-- 视野区编辑（仅房主可见） -->
+  <div id="zone-bar" hidden>
+    <div class="set-row">
+      <span class="set-label">遮挡</span>
+      <div id="zone-modes" class="set-seg"></div>
+    </div>
+    <div class="set-row">
+      <span class="set-label">可见队伍</span>
+      <div id="zone-teams" class="set-seg"></div>
+    </div>
+    <div class="set-row">
+      <button id="zone-draw" type="button">画区</button>
+      <span id="zone-hint" class="set-note"></span>
+    </div>
+    <div id="zone-list" class="zone-list"></div>
   </div>
 
   <!-- 物品：从这里把骰子/标记拖到桌面上 -->
@@ -154,6 +172,7 @@
 <script src="room.js"></script>
 <script src="log.js"></script>
 <script src="panels.js"></script>
+<script src="zoneui.js"></script>
 <script src="saves.js"></script>
 <script src="app.js"></script>
 </body>

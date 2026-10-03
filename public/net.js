@@ -27,6 +27,7 @@
       onPeer: null,
       onRoom: null,       // 房间元数据（玩家列表 / 队伍）
       onLog: null,        // 消息流（谁进来/离开/换队/被踢）
+      onVis: null,        // 可见集差分（双盲：棋子进出视野区）
       onFatal: null,      // 服务端拒绝连接（身份失效 / 房间不存在）
 
       send: function (obj) {
@@ -50,6 +51,7 @@
     if (opts.onPeer) api.onPeer = opts.onPeer;
     if (opts.onRoom) api.onRoom = opts.onRoom;
     if (opts.onLog) api.onLog = opts.onLog;
+    if (opts.onVis) api.onVis = opts.onVis;
     if (opts.onFatal) api.onFatal = opts.onFatal;
 
     function open() {
@@ -77,6 +79,7 @@
         else if (m.t === 'peer' && api.onPeer) api.onPeer(m.n);
         else if (m.t === 'room' && api.onRoom) api.onRoom(m);
         else if (m.t === 'log' && api.onLog) api.onLog(m);
+        else if (m.t === 'vis' && api.onVis) api.onVis(m);
         else if (m.t === 'fatal' && api.onFatal) api.onFatal(m);
       };
 

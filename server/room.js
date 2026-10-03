@@ -27,6 +27,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const zones = require('./zones');
 
 const SAVE_DEBOUNCE_MS = 5000;
 const MAX_BATCH = 2048;          // 单次批量移动上限，防畸形包
@@ -57,6 +58,12 @@ class Room {
     this.tokenSeq = 0;         // 标记 id 分配器
     this.clients = new Set();
     this.pieces = new Map();
+
+    // 视野区（双盲）。空数组 = 没有双盲，一切照旧可见。
+    this.zoneList = [];
+    // 每个连接「已下发的棋子 id 集合」，用于可见集差分：
+    // 棋子移出视野时要主动通知客户端删掉，而不是只停止发送它的 op。
+    this.seen = new Map();       // ws -> Set<pieceId>
     this.scene = '';             // 当前场景 slug
     this.label = '';
 
@@ -121,6 +128,11 @@ class Room {
     this.scene = (meta && meta.scene) || '';
     this.label = (meta && meta.label) || '';
 
+    // 视野区随盘面一起换。导入存档时若存档里没有 zones，
+    // 就清空 —— 旧的视野区套在新的盘面上多半是错的，
+    // 留着会让「导入后有些棋子莫名看不见」变得极难排查。
+    this.loadZones(meta && meta.zones);
+
     this.save();
     return this.pieces.size;
   }
@@ -172,12 +184,17 @@ class Room {
       this.cloneSeq = d.cloneSeq | 0;
       this.diceSeq = d.diceSeq | 0;
       this.tokenSeq = d.tokenSeq | 0;
+      // 视野区也要恢复，否则重启后双盲静默失效 ——
+      // 「重启一下就能看到全部」是最糟的那种漏洞：它看起来像正常行为。
+      this.loadZones(d.zones);
       return true;
     } catch (_) {
       return false;
     }
   }
 
+  // 未裁剪的完整快照。**只用于落盘与「无视野区」的房间**，
+  // 下发给客户端一律走 snapshotFor()。
   snapshot() {
     return {
       seq: this.seq,
@@ -186,8 +203,136 @@ class Room {
       tokenSeq: this.tokenSeq,
       scene: this.scene,
       label: this.label,
+      zones: this.zoneList,
       pieces: Array.from(this.pieces.values())
     };
+  }
+
+  /* ---------- 双盲：按连接裁剪 ---------- */
+
+  // 该连接对应的队伍。ws.teamId 由 index.js 在广播前更新（玩家可能中途换队）。
+  _teamOf(ws) {
+    return (ws && ws.teamId) || null;
+  }
+
+  /**
+   * 面向某个连接的快照。
+   *
+   * 不可见的棋子**整条不下发** —— 不能只把 img 清空，
+   * 那样位置与尺寸仍然泄密。
+   */
+  snapshotFor(ws) {
+    const team = this._teamOf(ws);
+    const out = {
+      seq: this.seq,
+      cloneSeq: this.cloneSeq,
+      diceSeq: this.diceSeq,
+      tokenSeq: this.tokenSeq,
+      scene: this.scene,
+      label: this.label,
+      // 区域本身也要过滤：hide 区不在名单里连框都不能看到
+      zones: zones.zoneList(this.zoneList, team),
+      pieces: []
+    };
+
+    const seen = new Set();
+    this.pieces.forEach((p) => {
+      const v = zones.pieceFor(p, this.zoneList, team);
+      if (!v) return;
+      out.pieces.push(v);
+      seen.add(p.id);
+    });
+
+    // 记下这次下发了什么，后续差分以此为准
+    this.seen.set(ws, seen);
+    return out;
+  }
+
+  /**
+   * 可见集差分。
+   *
+   * **这是双盲最容易漏的一环**：光过滤快照和 op 是不够的。
+   * 棋子原本可见、被拖进隐藏区之后，客户端必须主动删掉它；
+   * 只停止发送它的 op 的话，那枚棋子会**永远留在对面的屏幕上**。
+   *
+   * 返回 { add:[piece], remove:[id] }。相等时返回 null（不必发消息）。
+   */
+  visibilityDiff(ws) {
+    if (!this.zoneList.length) return null;      // 没开双盲，不折腾
+
+    const team = this._teamOf(ws);
+    const before = this.seen.get(ws);
+
+    // 没有基线（刚连接还没发过 init）时不差分，
+    // 否则会重复下发一遍全部棋子。
+    if (!before) return null;
+
+    const now = new Map();
+    const cur = new Set();
+    this.pieces.forEach((p) => {
+      const v = zones.pieceFor(p, this.zoneList, team);
+      now.set(p.id, v);
+      if (v) cur.add(p.id);
+    });
+
+    const add = [], remove = [];
+
+    cur.forEach((id) => {
+      if (!before.has(id)) add.push(now.get(id));
+    });
+    before.forEach((id) => {
+      // 已删除的棋子也在这里：客户端该把它清掉
+      if (!cur.has(id)) remove.push(id);
+    });
+
+    this.seen.set(ws, cur);
+    if (!add.length && !remove.length) return null;
+    return { add: add, remove: remove };
+  }
+
+  /** 某个连接此刻能看到这枚棋子的真实正面吗（用于拦住会泄露的操作） */
+  canSeeFull(ws, piece) {
+    return zones.full(piece, this.zoneList, this._teamOf(ws));
+  }
+
+  /* ---------- 视野区增删改 ---------- */
+
+  setZone(raw, replaceId) {
+    const z = zones.normZone(raw, replaceId);
+    if (!z) return null;
+
+    if (replaceId) {
+      const i = this.zoneList.findIndex((x) => x.id === replaceId);
+      if (i < 0) return null;
+      this.zoneList[i] = z;
+    } else {
+      if (this.zoneList.length >= zones.MAX_ZONES) return null;
+      // id 撞了就换一个，避免覆盖别人的区域
+      if (this.zoneList.some((x) => x.id === z.id)) {
+        z.id = 'z' + Math.random().toString(36).slice(2, 10);
+      }
+      this.zoneList.push(z);
+    }
+    this.seq++;
+    this.save();
+    return z;
+  }
+
+  removeZone(id) {
+    const i = this.zoneList.findIndex((x) => x.id === id);
+    if (i < 0) return false;
+    this.zoneList.splice(i, 1);
+    this.seq++;
+    this.save();
+    return true;
+  }
+
+  loadZones(list) {
+    this.zoneList = [];
+    (list || []).forEach((raw) => {
+      const z = zones.normZone(raw);
+      if (z && !this.zoneList.some((x) => x.id === z.id)) this.zoneList.push(z);
+    });
   }
 
   save() {
@@ -560,6 +705,20 @@ class Room {
         this.seq++;
         this.save();
         return { k: 'roll', list: out };
+      }
+
+      // 视野区增删改。
+      //
+      // **权限在 index.js 那层校验**（只有房主能改），这里只做数据。
+      // 客户端传 replaceId 表示「改这一块」，不传就是新建。
+      case 'zone': {
+        if (op.del) {
+          if (!this.removeZone(String(op.id || ''))) return null;
+          return { k: 'zone', del: true, id: String(op.id), zones: this.zoneList };
+        }
+        const z = this.setZone(op.zone || op, op.replaceId ? String(op.replaceId) : '');
+        if (!z) return null;
+        return { k: 'zone', zone: z, zones: this.zoneList };
       }
 
       default:

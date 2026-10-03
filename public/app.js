@@ -162,6 +162,17 @@
     onContext: onContext,
     onLongPress: onLongPress,
     onMarquee: onMarquee,
+    // 空白处拖动：建区模式下由 ZoneUI 接手，否则返回 false 照旧平移
+    onEmptyDragStart: function (wx, wy) {
+      if (!global.ZoneUI || !global.ZoneUI.isDrawing()) return false;
+      return global.ZoneUI.begin(wx, wy);
+    },
+    onEmptyDragMove: function (wx, wy) {
+      if (global.ZoneUI) global.ZoneUI.update(wx, wy);
+    },
+    onEmptyDragEnd: function () {
+      if (global.ZoneUI) global.ZoneUI.commit();
+    },
     onDragStart: onDragStart,
     onDragMove: onDragMove,
     onDragEnd: onDragEnd
@@ -432,6 +443,17 @@
       selection.clear();
       selection.add(np.id);
       syncHudSel();
+      return;
+    }
+
+    // 视野区变更
+    if (op.k === 'zone') {
+      if (global.ZoneUI) {
+        global.ZoneUI.setZones(op.zones || []);
+      }
+      // 区域变了，背景层要重画
+      board.requestBg ? board.requestBg() : board.requestDraw();
+      board.requestDraw();
       return;
     }
 
@@ -891,6 +913,9 @@
         pieces.set(p.id, p);
       });
 
+      // 视野区（服务端已按我的队伍过滤过，这里不必再判一次）
+      if (global.ZoneUI) global.ZoneUI.setZones(m.zones || []);
+
       orderDirty = true;
       if (elHudScene) elHudScene.textContent = m.label || m.scene || '—';
 
@@ -930,6 +955,50 @@
       if (elHudTeam) {
         elHudTeam.textContent = t ? t.name : '旁观';
         elHudTeam.className = t ? ('team-' + t.id) : '';
+      }
+
+      if (global.ZoneUI) {
+        global.ZoneUI.setTeams(m.room.teams || []);
+        global.ZoneUI.setMyTeam(you.teamId || null);
+      }
+
+      // 「视野区」按钮只给房主 —— 服务端也会硬拦（非房主发 zone op 被拒），
+      // 这里藏起来只是别让人白点。
+      var elZb = document.getElementById('btn-zone');
+      if (elZb) {
+        elZb.hidden = !you.owner;
+        if (!you.owner) {
+          var bar = document.getElementById('zone-bar');
+          if (bar) bar.hidden = true;
+        }
+      }
+    },
+
+    // 可见集差分（双盲）。
+    //
+    // 服务端发现某枚棋子在你这边「从看得见变成看不见」（或反过来）时
+    // 发这条。**必须真的删掉**，不能只是不再收它的 op ——
+    // 那样它会永远留在屏幕上，这是双盲最典型的漏法。
+    onVis: function (m) {
+      var removed = 0;
+      (m.remove || []).forEach(function (id) {
+        if (pieces.delete(id)) removed++;
+        selection.delete(id);
+        delete diceAnim[id];
+      });
+      var added = 0;
+      (m.add || []).forEach(function (p) {
+        // 服务端给的是原始坐标，转成显示坐标
+        var w = mapPt(p.x, p.y);
+        p.x = w.x; p.y = w.y;
+        pieces.set(p.id, p);
+        if (typeof p.z === 'number' && p.z > zMax) zMax = p.z;
+        added++;
+      });
+      if (removed || added) {
+        orderDirty = true;
+        syncHudSel();
+        board.requestDraw();
       }
     },
 
@@ -1574,7 +1643,26 @@
   // 「掷骰」动作：双击骰子即可掷（骰子自己的菜单里也有）。
   // 键盘 R 也能掷选中的骰子，补上撤掉的工具栏按钮。
 
-  /* ---------- 启动 ---------- */  /* ---------- 面板折叠 ---------- */
+  // 视野区面板发出去的 op 走正常通道（服务端会校验房主身份）
+  if (global.ZoneUI) {
+    global.ZoneUI.onSend(function (op) { commit(op); });
+  }
+
+  /* ---------- 启动 ---------- */  /* ---------- 视野区绘制 ---------- */
+
+  // 画在**背景层**：区域边框只在视变换变化时才需要重画，
+  // 而棋子每帧都在动。画在 fg 上会白白增加每帧开销。
+  if (global.ZoneUI) {
+    board.setBgDrawer(function (g, view) {
+      var isOwner = false;
+      var st = global.RoomUI && global.RoomUI.state();
+      if (st && st.you) isOwner = !!st.you.owner;
+      global.ZoneUI.draw(g, view, isOwner);
+    });
+    board.requestBg();
+  }
+
+  /* ---------- 面板折叠 ---------- */
 
   // 窄屏默认收起，避免左上/右上两块叠在一起（见 panels.js 的文件头）。
   // 两块互为 peer：窄屏上展开一块会自动收起另一块。

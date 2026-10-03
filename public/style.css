@@ -570,3 +570,37 @@ button.primary:disabled{opacity:.55;cursor:default}
 @media (max-width:560px){
   .panel-toggle{padding:5px 4px;font-size:12px}
 }
+
+/* ---------- 视野区编辑面板 ---------- */
+
+#zone-bar{
+  display:flex;flex-direction:column;gap:6px;
+  padding-top:7px;
+  border-top:1px solid var(--line);
+}
+#zone-bar[hidden]{display:none}
+
+.zone-list{
+  display:flex;flex-direction:column;gap:2px;
+  max-height:26vh;overflow-y:auto;
+}
+.zone-row{
+  display:flex;align-items:center;gap:6px;
+  font-size:11px;color:var(--fg);
+  padding:2px 3px;border-radius:4px;
+}
+.zone-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zone-tag{
+  margin-left:auto;flex:none;
+  font-size:10px;padding:1px 5px;border-radius:4px;
+  background:#e8e0d0;color:var(--dim);
+}
+.zone-tag.hide{background:#f3dedb;color:#8d3f34}
+.zone-tag.blind{background:#e7e2f2;color:#5b4f80}
+.zone-del{
+  appearance:none;flex:none;
+  border:1px solid var(--line-2);background:#fbf9f4;
+  color:var(--dim);padding:0 5px;border-radius:4px;
+  font:inherit;font-size:10px;cursor:pointer;
+}
+.zone-del:hover{background:#f7e8e4;color:#b4453a}

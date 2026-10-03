@@ -1,0 +1,271 @@
+/*
+ * zoneui.js —— 视野区的绘制与编辑（房主）
+ *
+ * 边界说明：区域数据来自服务端（`init.zones` / `zone` op），
+ * 而服务端已按队伍过滤过 —— 所以这里**只管画**，
+ * 不需要（也不应该）再做一次可见性判断。重复判断只会让两处规则长歪。
+ *
+ * 绘制放在 bg 层（静态层）：区域边框只在视变换变化时需要重画，
+ * 而棋子每帧都在动。画在 fg 上会白白增加每帧开销。
+ */
+(function (global) {
+  'use strict';
+
+  var MODE_COLOR = {
+    hide: '#b4453a',      // 红：看不见
+    blind: '#8a7bb5'      // 紫：看得见框但内容脱敏
+  };
+
+  var elBtn = document.getElementById('btn-zone');
+  var elBar = document.getElementById('zone-bar');
+  var elModes = document.getElementById('zone-modes');
+  var elTeams = document.getElementById('zone-teams');
+  var elHint = document.getElementById('zone-hint');
+  var elList = document.getElementById('zone-list');
+
+  var zones = [];          // 服务端给的、已过滤的区域
+  var teams = [];          // 房间队伍
+  var drafting = null;     // 正在画的矩形（世界坐标）
+  var drawMode = false;    // 是否处于「拖拽画区」状态
+
+  var mode = 'hide';
+  // 默认「仅自己队伍可见」。留空会让新区块把**所有人**（包括建区的你）
+  // 都挡在外面，画完发现东西没了会以为是 bug。
+  var see = [];
+
+  /* ---------- 对外数据同步 ---------- */
+
+  function setZones(list) {
+    zones = Array.isArray(list) ? list : [];
+    renderList();
+  }
+
+  function setTeams(list) {
+    teams = Array.isArray(list) ? list : [];
+    // 第一次拿到队伍列表时，默认勾上自己的队伍（见 see 的注释）
+    if (!see.length && myTeamId && teams.some(function (t) { return t.id === myTeamId; })) {
+      see = [myTeamId];
+    }
+    renderTeamPicker();
+  }
+
+  var myTeamId = null;
+  function setMyTeam(id) {
+    myTeamId = id || null;
+    // 换队时把默认项跟着换（但不动用户已手动改过的选择）
+    if (myTeamId && !see.length) {
+      see = [myTeamId];
+      renderTeamPicker();
+    }
+  }
+
+  /* ---------- 绘制 ---------- */
+
+  // 由 app.js 的 bg 层 drawer 调用。传入 canvas ctx + 视变换。
+  function draw(g, view, isOwner) {
+    if (!zones.length && !drafting) return;
+
+    var ox = view.ox, oy = view.oy;
+    var s = view.s;
+
+    zones.forEach(function (z) {
+      var x = (z.x - ox), y = (z.y - oy);
+      var color = MODE_COLOR[z.mode] || '#b4453a';
+
+      g.save();
+      // 填充用很淡的一层，避免挡住下面的棋子
+      g.fillStyle = z.mode === 'blind' ? 'rgba(138,123,181,.10)' : 'rgba(180,69,58,.08)';
+      g.fillRect(x, y, z.w, z.h);
+
+      // 描边在屏幕坐标里保持恒定粗细（除以 s 抵消 scale）
+      g.strokeStyle = color;
+      g.lineWidth = 2 / Math.max(s, 0.02);
+      g.setLineDash([8 / Math.max(s, 0.02), 5 / Math.max(s, 0.02)]);
+      g.strokeRect(x, y, z.w, z.h);
+      g.setLineDash([]);
+
+      // 名字：缩放太小时不画（会糊成一团）
+      if (s > 0.12) {
+        var fs = Math.max(11, 13) / s;
+        g.font = fs.toFixed(0) + 'px -apple-system,"Segoe UI",Roboto,sans-serif';
+        g.fillStyle = color;
+        g.textBaseline = 'bottom';
+        g.fillText(z.name + (isOwner ? '' : ''), x + 4 / s, y - 3 / s);
+      }
+      g.restore();
+    });
+
+    // 正在拖拽的草稿
+    if (drafting) {
+      var dx = Math.min(drafting.x0, drafting.x1) - ox;
+      var dy = Math.min(drafting.y0, drafting.y1) - oy;
+      var dw = Math.abs(drafting.x1 - drafting.x0);
+      var dh = Math.abs(drafting.y1 - drafting.y0);
+      var dc = MODE_COLOR[mode] || '#b4453a';
+
+      g.save();
+      g.fillStyle = 'rgba(194,112,63,.14)';
+      g.fillRect(dx, dy, dw, dh);
+      g.strokeStyle = dc;
+      g.lineWidth = 2 / Math.max(s, 0.02);
+      g.setLineDash([6 / Math.max(s, 0.02), 4 / Math.max(s, 0.02)]);
+      g.strokeRect(dx, dy, dw, dh);
+      g.restore();
+    }
+  }
+
+  /* ---------- 编辑界面 ---------- */
+
+  function buildSeg(el, items, current, onPick) {
+    el.innerHTML = '';
+    items.forEach(function (o) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = o.name;
+      b.className = o.id === current ? 'on' : '';
+      b.addEventListener('click', function () { onPick(o.id); });
+      el.appendChild(b);
+    });
+  }
+
+  function renderTeamPicker() {
+    if (!elTeams) return;
+    buildSeg(elTeams, teams, see[0] || null, function (id) {
+      // 单选：一个区域先只支持「一个队伍可见」，需要多队时再放开
+      see = see[0] === id ? [] : [id];
+      renderTeamPicker();
+    });
+  }
+
+  function renderModes() {
+    if (!elModes) return;
+    buildSeg(elModes, [
+      { id: 'hide', name: '看不见' },
+      { id: 'blind', name: '看得见背面' }
+    ], mode, function (id) { mode = id; renderModes(); });
+  }
+
+  function renderList() {
+    if (!elList) return;
+    elList.innerHTML = '';
+    if (!zones.length) {
+      var e = document.createElement('div');
+      e.className = 'set-note';
+      e.textContent = '还没有视野区。';
+      elList.appendChild(e);
+      return;
+    }
+    zones.forEach(function (z) {
+      var row = document.createElement('div');
+      row.className = 'zone-row';
+
+      var nm = document.createElement('span');
+      nm.className = 'zone-name';
+      nm.textContent = z.name;
+      row.appendChild(nm);
+
+      var tag = document.createElement('span');
+      tag.className = 'zone-tag ' + z.mode;
+      tag.textContent = z.mode === 'hide' ? '仅 ' + seeNames(z.see) : seeNames(z.see) + ' 见背面';
+      row.appendChild(tag);
+
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'zone-del';
+      del.textContent = '删除';
+      del.addEventListener('click', function () { send({ k: 'zone', del: true, id: z.id }); });
+      row.appendChild(del);
+
+      elList.appendChild(row);
+    });
+  }
+
+  function seeNames(ids) {
+    if (!ids || !ids.length) return '无人';
+    return ids.map(function (id) {
+      var t = teams.filter(function (x) { return x.id === id; })[0];
+      return t ? t.name : id;
+    }).join('/');
+  }
+
+  function setHint(text) {
+    if (elHint) elHint.textContent = text;
+  }
+
+  /* ---------- 与 app.js 的接口 ---------- */
+
+  var sendFn = null;
+
+  function send(op) {
+    if (sendFn) sendFn(op);
+  }
+
+  function setDraw(on) {
+    drawMode = !!on;
+    if (elBtn) elBtn.className = drawMode ? 'on' : '';
+    if (elBtn) elBtn.textContent = drawMode ? '画区中…' : '视野区';
+    setHint(drawMode
+      ? '在桌面上拖出一个矩形，松手即建区'
+      : '点「画区」后在桌面上拖出矩形');
+  }
+
+  global.ZoneUI = {
+    setZones: setZones,
+    setTeams: setTeams,
+    setMyTeam: setMyTeam,
+    draw: draw,
+    isDrawing: function () { return drawMode; },
+    onSend: function (fn) { sendFn = fn; },
+
+    // 拖拽回调由 board.js 转到 app.js，再由 app.js 转进来
+    begin: function (wx, wy) {
+      if (!drawMode) return false;
+      drafting = { x0: wx, y0: wy, x1: wx, y1: wy };
+      return true;
+    },
+    update: function (wx, wy) {
+      if (!drafting) return;
+      drafting.x1 = wx; drafting.y1 = wy;
+    },
+    commit: function () {
+      if (!drafting) return;
+      var d = drafting;
+      drafting = null;
+
+      var x = Math.min(d.x0, d.x1), y = Math.min(d.y0, d.y1);
+      var w = Math.abs(d.x1 - d.x0), h = Math.abs(d.y1 - d.y0);
+      // 太小当作误触，不当成一次建区（否则会留下看不见的小区域）
+      if (w < 20 || h < 20) { setHint('矩形太小，已忽略'); return; }
+
+      send({
+        k: 'zone',
+        zone: { x: x, y: y, w: w, h: h, see: see.slice(), mode: mode, name: mode === 'hide' ? '禁视区' : '盲视区' }
+      });
+      setDraw(false);
+      setHint('已建区');
+    },
+    cancel: function () { drafting = null; }
+  };
+
+  /* ---------- 面板交互 ---------- */
+
+  if (elBtn && elBar) {
+    elBtn.addEventListener('click', function () {
+      var open = elBar.hidden;
+      elBar.hidden = !open;
+      elBtn.className = open ? 'on' : '';
+      if (!open) setDraw(false);
+    });
+  }
+
+  var elDraw = document.getElementById('zone-draw');
+  if (elDraw) {
+    elDraw.addEventListener('click', function () {
+      setDraw(!drawMode);
+    });
+  }
+
+  renderModes();
+  renderTeamPicker();
+  renderList();
+})(window);

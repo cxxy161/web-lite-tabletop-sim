@@ -71,6 +71,7 @@
 
     var bgDirty = true, fgDirty = true, raf = 0;
 
+    var bgDrawer = null;       // 背景层绘制钩子（视野区用）
     var pointers = new Map();  // pointerId -> {x,y} 屏幕坐标
     var gest = null;
 
@@ -157,6 +158,17 @@
       var g = bctx;
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.clearRect(0, 0, size.w, size.h);
+
+      // 背景层绘制钩子（视野区边框走这里）。
+      // **必须在原点准星的 early return 之前调用** ——
+      // 准星离屏时会提前返回，把钩子放在后面会导致
+      // 「拖到远处后视野区边框消失」。
+      if (bgDrawer) {
+        g.save();
+        g.scale(view.s, view.s);
+        bgDrawer(g, view);
+        g.restore();
+      }
 
       // 无限地图上没有任何参照物会让人失去方向感，
       // 所以在世界原点画一个极淡的准星 —— 是准星，不是格子。
@@ -364,6 +376,13 @@
         clearLp(gest);                       // 开始移动 -> 不再算长按
         if (gest.hit) {
           gest.mode = 'drag';
+        } else if (opts.onEmptyDragStart &&
+                   opts.onEmptyDragStart(gest.w0.x, gest.w0.y) === true) {
+          // 调用方接手这次空白拖动（建区模式）。
+          // 必须返回 true 才算接住，否则照旧平移 ——
+          // 用返回值而不是 boolean 选项，是因为「能不能画」
+          // 取决于当时的模式，不该在建立手势时就知道。
+          gest.mode = 'empty';
         } else if (marqueeEnabled || e.shiftKey) {
           // 空白处拖动 = 框选。
           // 两种触发：工具栏的「框选」开关（手机用），
@@ -376,6 +395,13 @@
         if (gest.mode === 'drag' && opts.onDragStart) {
           opts.onDragStart(gest.hit, gest.w0.x, gest.w0.y);
         }
+      }
+
+      if (gest.mode === 'empty') {
+        var ew = screenToWorld(p.x, p.y);
+        if (opts.onEmptyDragMove) opts.onEmptyDragMove(ew.x, ew.y);
+        requestBg(); requestDraw();
+        return;
       }
 
       if (gest.mode === 'marquee') {
@@ -426,6 +452,16 @@
       }
 
       if (pointers.size === 0) {
+        // 空白拖动结束（建区）
+        if (gest.mode === 'empty') {
+          var wasEmpty = true;
+          gest = null;
+          fg.classList.remove('grabbing');
+          if (opts.onEmptyDragEnd) opts.onEmptyDragEnd();
+          requestBg(); requestDraw();
+          return;
+        }
+
         // 框选结束：把矩形换算成世界坐标交给调用方
         if (gest.mode === 'marquee' && marquee) {
           var a0 = screenToWorld(marquee.x0, marquee.y0);
@@ -530,6 +566,7 @@
       requestBg: requestBg,
 
       setDrawer: function (fn) { drawer = fn; requestDraw(); },
+      setBgDrawer: function (fn) { bgDrawer = fn; requestBg(); },
 
       // 打开后：空白处拖动 = 框选；关闭则恢复为平移地图
       setMarquee: function (on) {
