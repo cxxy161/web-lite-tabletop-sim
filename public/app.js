@@ -55,6 +55,38 @@
   var order = [];
   var orderDirty = true;
 
+  /* ---------- 骰子动画 ---------- */
+
+  // id -> {t0, dur}。存在即表示这颗骰子正在滚。
+  // 动画结束条目会被删掉，所以「动画中」不需要额外的布尔量。
+  var diceAnim = {};
+  var pendingAnim = false;     // 本帧还有动画没跑完，需要继续重绘
+
+  function nowMs() {
+    return (global.performance && global.performance.now)
+      ? global.performance.now() : Date.now();
+  }
+
+  // 每颗骰子的固定相位：让它们即便同时掷出也不会整齐划一地转
+  function dicePhase(id) {
+    var h = 0;
+    for (var i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) & 0xffff;
+    return h;
+  }
+
+  // 开一次滚动动画。时长带一点随机，避免多颗骰子完全同步。
+  function startRoll(ids) {
+    var t0 = nowMs();
+    for (var i = 0; i < ids.length; i++) {
+      diceAnim[ids[i]] = {
+        t0: t0 + i * 40,                       // 略微错开，像依次滚出去
+        dur: 760 + (dicePhase(ids[i]) % 260)
+      };
+    }
+    pendingAnim = true;
+    board.requestDraw();
+  }
+
   /* ---------- 位置映射 ---------- */
 
   // TTS 的 (posX, posZ) -> 画布 (x, y) 有 4 种轴符号组合，纯数学推不唯一
@@ -116,6 +148,28 @@
     var vw = board.size.w, vh = board.size.h;
     var showRing = s >= 0.05;
 
+    // 骰子动画先统一推进/清理，**再**去画。
+    //
+    // 不能把清理写在「画某颗骰子」的分支里：那条路径前面有视口裁剪，
+    // 一旦把这颗骰子拖出屏幕（或缩得很小走了别的分支），
+    // 清理就永远不会执行 —— 到期条目一直留在 diceAnim 里，
+    // pendingAnim 永远为真，于是变成**常驻 rAF 死循环**（手机持续唤醒）。
+    // 这类 bug 画面上看不出来，只费电。
+    var diceProg = {};
+    var diceActive = false;
+    var nowT = nowMs();
+    for (var dk in diceAnim) {
+      if (!diceAnim.hasOwnProperty(dk)) continue;
+      var an = diceAnim[dk];
+      // 骰子被删掉了 -> 顺手清掉动画
+      if (!pieces.has(dk)) { delete diceAnim[dk]; continue; }
+      var pr = (nowT - an.t0) / an.dur;
+      if (pr >= 1) { delete diceAnim[dk]; continue; }
+      diceProg[dk] = pr < 0 ? 0 : pr;
+      diceActive = true;
+    }
+    pendingAnim = diceActive;
+
     var list = ordered();
     var used = [];
     var dragSet = null;
@@ -140,6 +194,17 @@
         var cx = p.x - ox;
         var cy = p.y - oy;
         var rr = p.r || 0;
+
+        // 骰子是**画出来的**，不走贴图 / LOD 那一套。
+        // 它们尺寸很小、数量也少，直接矢量绘制比分发贴图更省。
+        if (p.ds > 0) {
+          // 进度在帧首统一算好（见上面），这里只查表
+          var prog = diceProg.hasOwnProperty(p.id) ? diceProg[p.id] : null;
+          Dice.draw(g, cx, cy, p.w, p.ds, p.v, prog, dicePhase(p.id));
+          if (p.lk) strokeLock(g, cx - hw, cy - hh, p.w, p.h, s);
+          if (selection.has(p.id) && showRing) strokeSel(g, cx - hw, cy - hh, p.w, p.h, s);
+          continue;
+        }
 
         // LOD：屏幕长边太小就不加载贴图，画色块。
         // 阈值可调（设置面板），0 表示关闭 LOD（任何尺寸都画真贴图）。
@@ -186,6 +251,13 @@
     }
 
     tex.markFrame(used);      // 钉住本帧用到的贴图，其余可被 LRU 淘汰
+
+    // 骰子还在滚 -> 再排一帧。
+    // 只在真有动画时续帧，不做常驻 rAF（那会让手机一直保持唤醒）。
+    // pendingAnim 由帧首的动画推进统一赋值，这里只管续帧。
+    if (pendingAnim) {
+      global.requestAnimationFrame(function () { board.requestDraw(); });
+    }
   });
 
   function strokeSel(g, x, y, w, h, s) {
@@ -308,9 +380,40 @@
       return;
     }
 
+    // 新骰子：服务端回完整棋子对象（原始坐标）
+    if (op.k === 'dice' && op.piece) {
+      var dp = Object.assign({}, op.piece);
+      var dw = mapPt(dp.x, dp.y);
+      dp.x = dw.x; dp.y = dw.y;
+      pieces.set(dp.id, dp);
+      if (typeof dp.z === 'number' && dp.z > zMax) zMax = dp.z;
+      orderDirty = true;
+      // 新加的骰子直接滚一次，省得再点一下
+      startRoll([dp.id]);
+      return;
+    }
+
+    // 掷骰结果：点数以服务端为准，同时触发滚动动画
+    if (op.k === 'roll' && Array.isArray(op.list)) {
+      var rollIds = [];
+      for (var ri = 0; ri < op.list.length; ri++) {
+        var it2 = op.list[ri];
+        var q2 = pieces.get(it2.id);
+        if (!q2) continue;
+        q2.v = it2.v | 0;
+        if (typeof it2.z === 'number' && it2.z > zMax) zMax = it2.z;
+        q2.z = it2.z;
+        rollIds.push(q2.id);
+      }
+      orderDirty = true;
+      if (rollIds.length) startRoll(rollIds);
+      return;
+    }
+
     if (op.k === 'del') {
       pieces.delete(op.id);
       selection.delete(op.id);
+      delete diceAnim[op.id];
       syncHudSel();
       orderDirty = true;
       return;
@@ -320,7 +423,7 @@
     if (!q) return;
 
     if (op.k === 'flip') q.f = op.f ? 1 : 0;
-    // 保留一位小数：真实资产有 596 枚棋子的朝向是 0.27 这类小数，
+    // 角度保留两位小数：真实资产有 596 枚棋子的朝向是 0.27 这类小数，
     // 用 |0 取整会把它们静默抹平（服务端也是同样精度）。
     else if (op.k === 'rot') q.r = normR(op.r);
     else if (op.k === 'lock') q.lk = op.lk ? 1 : 0;
@@ -798,7 +901,10 @@
 
   var menu = global.Menu.create({
     el: document.getElementById('menu'),
-    onPick: function (action, piece) { doAction(action, piece); }
+    // 第三个参数 value 必须转发 —— 单选列表传目标形态下标、
+    // 滑杆传目标角度。漏掉它会让两者都变成 undefined：
+    // si 变 0、r 变 0，看起来像「点了没反应」或「全转回 0°」。
+    onPick: function (action, piece, value) { doAction(action, piece, value); }
   });
 
   // 对当前选择整体执行的辅助：单选就是长度 1 的批量
@@ -811,35 +917,84 @@
     var n = sel.length;
     var many = n > 1;
     var suffix = many ? '（' + n + ' 枚）' : '';
+    if (!sel.length) return;
 
-    // 「切换形态」只在所有选中项都真的有多形态时可用
-    var statesOk = sel.length > 0 && sel.every(function (p) {
-      return p.st && p.st.length > 1;
-    });
-    var nextState = 0;
-    if (statesOk) {
-      // 取第一枚的下一形态作为预览名
-      nextState = ((sel[0].si | 0) + 1) % sel[0].st.length;
+    var allLocked = sel.every(function (p) { return p.lk; });
+    var one = sel[0];
+    var isDice = sel.every(function (p) { return p.ds > 0; });
+
+    var items = [];
+
+    // ---- 骰子：单独的菜单，棋子那些项对它没意义 ----
+    if (isDice) {
+      items.push({ action: 'roll', label: '掷骰' + suffix });
+      items.push({ sep: true });
+      items.push({ action: 'lock', label: allLocked ? ('解冻' + suffix) : ('固定（冻结）' + suffix) });
+      items.push({ action: 'clone', label: '克隆' + suffix });
+      items.push({ action: 'del', label: '删除' + suffix, danger: true });
+      menu.show(piece, items, at);
+      return;
     }
 
-    var allLocked = sel.length > 0 && sel.every(function (p) { return p.lk; });
+    items.push({ action: 'flip', label: '翻面' + suffix });
 
-    menu.show(piece, [
-      { action: 'flip', label: '翻面' + suffix },
-      { action: 'rot', label: '旋转 90°' + suffix },
-      statesOk
-        ? { action: 'state', label: '切换形态' + suffix,
-            note: ' → ' + (nextState + 1) + '/' + sel[0].st.length }
-        : { action: 'state', label: '切换形态', disabled: true,
-            note: sel.length ? ' 该棋子只有一种形态' : '' },
-      { sep: true },
-      { action: 'lock', label: allLocked ? ('解冻' + suffix) : ('固定（冻结）' + suffix) },
-      { action: 'clone', label: '克隆' + suffix },
-      { action: 'del', label: '删除' + suffix, danger: true }
-    ], at);
+    // ---- 旋转：滑杆支持任意角度，不再是只能 90° 一档 ----
+    //
+    // 用 range 而不是「再点一次加 90°」，因为卡牌/板块在真实桌面上
+    // 经常要摆成任意角度（比如顺着地图的斜线）。
+    // 提交时机是 change（松手），拖动过程只更新数字 ——
+    // 否则一次拖动会发出上百个 op。
+    items.push({
+      slider: true,
+      action: 'rot',
+      label: '旋转',
+      min: 0, max: 359, step: 1,
+      value: Math.round(one.r || 0),
+      unit: '°',
+      presets: [0, 90, 180, 270]
+    });
+
+    // ---- 形态：**单选列表**，直接点目标形态 ----
+    //
+    // 之前是「点一次切下一个」，形态多的时候（本模组有 9 形态的对象）
+    // 要连点到目标，而且看不见全貌。现在把每个形态列出来直接选。
+    var statesOk = sel.every(function (p) { return p.st && p.st.length > 1; });
+    if (statesOk) {
+      var opts = [];
+      for (var i = 0; i < one.st.length; i++) {
+        opts.push({
+          value: i,
+          label: (i + 1) + ' / ' + one.st.length,
+          note: i === (one.si | 0) ? ' 当前' : ''
+        });
+      }
+      // 多选时各枚的当前形态可能不同，value 传第一枚的即可
+      items.push({
+        radio: true,
+        action: 'state',
+        label: '形态' + (many ? '（各枚按所选序号）' : ''),
+        options: opts,
+        value: one.si | 0
+      });
+    } else {
+      items.push({
+        action: 'state',
+        label: '切换形态',
+        disabled: true,
+        note: sel.some(function (p) { return p.st && p.st.length > 1; })
+          ? ' 选中的棋子形态数不一致' : ' 该棋子只有一种形态'
+      });
+    }
+
+    items.push({ sep: true });
+    items.push({ action: 'lock', label: allLocked ? ('解冻' + suffix) : ('固定（冻结）' + suffix) });
+    items.push({ action: 'clone', label: '克隆' + suffix });
+    items.push({ action: 'del', label: '删除' + suffix, danger: true });
+
+    menu.show(piece, items, at);
   }
 
-  function doAction(action, piece) {
+  function doAction(action, piece, value) {
     var sel = selectedPieces();
     if (!sel.length) return;
 
@@ -850,19 +1005,35 @@
         });
         break;
 
-      case 'rot':
+      // 滑杆传来的是**目标绝对角度**（不是增量），
+      // 所以多选时所有选中项都转到同一个角度。
+      case 'rot': {
+        var target = normR(Number(value));
         sel.forEach(function (p) {
-          if (!p.lk) commit({ k: 'rot', id: p.id, r: normR((p.r || 0) + 90) });
+          if (!p.lk) commit({ k: 'rot', id: p.id, r: target });
         });
         break;
+      }
 
-      case 'state':
+      // 单选列表传来的是目标形态下标，直接设，不再「下一个」
+      case 'state': {
+        var si = value | 0;
         sel.forEach(function (p) {
           if (p.lk || !p.st || p.st.length < 2) return;
-          var next = ((p.si | 0) + 1) % p.st.length;
-          commit({ k: 'state', id: p.id, si: next });
+          if (si < 0 || si >= p.st.length) return;
+          commit({ k: 'state', id: p.id, si: si });
         });
         break;
+      }
+
+      case 'roll': {
+        // 冻结的不能进批量：服务端对含冻结项的整批**整体拒绝**，
+        // 夹一颗冻结骰子会让其余全掷不动。这里先剔掉。
+        var rollable = sel.filter(function (p) { return p.ds > 0 && !p.lk; })
+                          .map(function (p) { return p.id; });
+        if (rollable.length) rollDice(rollable);
+        break;
+      }
 
       case 'lock': {
         // 只要还有一枚没冻，这一下就是「全冻」；全冻了才变「全解冻」
@@ -885,6 +1056,28 @@
         sel.forEach(function (p) { commit({ k: 'del', id: p.id }); });
         break;
     }
+  }
+
+  /* ---------- 骰子 ---------- */
+
+  // 先本地演起来，再等服务端回权威点数。
+  //
+  // 顺序很重要：等服务端回来才动，网络慢时会有明显迟滞；
+  // 先演的话，点数揭晓的瞬间就是服务端回包到达时 —— 观感更好，
+  // 而且**结果仍以服务端为准**（回包会覆盖 v）。
+  function rollDice(ids) {
+    if (!ids.length) return;
+    startRoll(ids);
+    net.send({ t: 'op', op: { k: 'roll', ids: ids } });
+  }
+
+  // 掷出指定面数的骰子，放在**当前视图中心**
+  function addDice(sides) {
+    var c = board.screenToWorld(board.size.w / 2, board.size.h / 2);
+    // 略随机偏移，连加几颗不会完全重叠
+    var jx = (Math.random() - 0.5) * 90;
+    var jy = (Math.random() - 0.5) * 90;
+    commit({ k: 'dice', ds: sides, x: c.x + jx, y: c.y + jy });
   }
 
   /* ---------- 设置：LOD 档位 ---------- */
@@ -944,6 +1137,50 @@
   });
   // 桌面端按住 Shift 也能框选，与绘图软件习惯一致（见 board.js）
 
+  /* ---------- 骰子按钮 ---------- */
+
+  var elDiceBar = document.getElementById('dice-bar');
+  var elDiceOpts = document.getElementById('dice-opts');
+  var elDiceBtn = document.getElementById('btn-dice');
+
+  elDiceBtn.addEventListener('click', function () {
+    elDiceBar.hidden = !elDiceBar.hidden;
+    elDiceBtn.className = elDiceBar.hidden ? '' : 'on';
+  });
+
+  // 「加骰」面板列出 d2/d4/d6/d10/d12
+  Dice.SIDES.forEach(function (ds) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = 'd' + ds;
+    b.addEventListener('click', function () {
+      addDice(ds);
+      elDiceBar.hidden = true;
+      elDiceBtn.className = '';
+    });
+    elDiceOpts.appendChild(b);
+  });
+
+  // 「掷骰」：掷选中的骰子；没选中骰子就掷场上全部骰子。
+  // 桌面上更常见的用法是「一把全掷」，所以没选时不该什么都不做。
+  document.getElementById('btn-roll').addEventListener('click', function () {
+    var ids = [];
+    selection.forEach(function (id) {
+      var p = pieces.get(id);
+      if (p && p.ds > 0 && !p.lk) ids.push(id);
+    });
+    if (!ids.length) {
+      pieces.forEach(function (p) {
+        if (p.ds > 0 && !p.lk) ids.push(p.id);
+      });
+    }
+    if (!ids.length) {
+      addDice(6);          // 场上一颗都没有：直接给一颗 d6
+      return;
+    }
+    rollDice(ids);
+  });
+
   /* ---------- 启动 ---------- */
 
   board.resetView();
@@ -964,6 +1201,11 @@
     pick: pick,
     pickAll: pickAll,
     coverClosure: coverClosure,
-    lod: function () { return lodThreshold; }
+    lod: function () { return lodThreshold; },
+
+    // 诊断 / 测试用：外部直接改 pieces 后必须调它，否则顺序缓存是旧的，
+    // pick 会拿不到刚插入的棋子。（产品代码永远走 applyOp，那里会自己标脏。）
+    touch: function () { orderDirty = true; board.requestDraw(); },
+    diceAnim: function () { return diceAnim; }
   };
 })(window);

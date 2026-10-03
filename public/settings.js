@@ -42,6 +42,10 @@
 
   var KEY = 'webtts.lod';
   var KEY_MAP = 'webtts.map';
+  // 映射的「世代」标记。轴符号约定变更时递增，
+  // 用来对已存在 localStorage 里的旧选择做一次性迁移。
+  var KEY_MAPV = 'webtts.mapv';
+  var MAP_VERSION = 2;
 
   // 位置映射候选。TTS 存档给出的是 (posX, posZ)，映射到 2D 画布
   // 有 4 种可能的轴符号组合。**这四种在纯数学推不唯一**（透视缩略图
@@ -138,7 +142,7 @@
     var elMap = opts.elMap;
     var elMapNote = opts.elMapNote;
     var onMap = opts.onMap;
-    var curMap = mapById(opts.initialMap) || mapById('pp');
+    var curMap = mapById(opts.initialMap) || mapById('pn');
 
     function applyMap(m, silent) {
       curMap = m;
@@ -170,8 +174,40 @@
       });
     }
 
+    // ---- 一次性迁移：把上下镜像补上 ----
+    //
+    // 第 1 代的轴符号约定少了一次上下镜像，表现是「卡片本身正了，
+    // 但卡片之间的相对位置整体上下颠倒」。这里对**已存的映射选择**
+    // 翻转 y 符号，而不是重置成某个固定值 —— 这样无论使用者
+    // 之前手动选的是哪一档，都只是被镜像一次，不会被抹掉他的选择。
+    //
+    // 翻转 y 在 4 个候选之间是一个对合（自己就是自己的逆）：
+    //   pp(+,+) <-> pn(+,-)      np(-,+) <-> nn(-,-)
     try {
       var mv = global.localStorage.getItem(KEY_MAP);
+
+      var ver = 0;
+      try { ver = parseInt(global.localStorage.getItem(KEY_MAPV), 10) || 0; } catch (_) {}
+
+      if (ver < MAP_VERSION) {
+        var oldM = mv && mapById(mv);
+        if (oldM) {
+          // 保留 x 符号，翻转 y 符号
+          var flipped = null;
+          for (var fi = 0; fi < MAPS.length; fi++) {
+            if (MAPS[fi].sx === oldM.sx && MAPS[fi].sy === -oldM.sy) {
+              flipped = MAPS[fi];
+              break;
+            }
+          }
+          if (flipped) {
+            try { global.localStorage.setItem(KEY_MAP, flipped.id); } catch (_) {}
+            mv = flipped.id;
+          }
+        }
+        try { global.localStorage.setItem(KEY_MAPV, String(MAP_VERSION)); } catch (_) {}
+      }
+
       var mm = mv && mapById(mv);
       if (mm) curMap = mm;
     } catch (_) {}
@@ -190,5 +226,8 @@
     };
   }
 
-  global.Settings = { create: create, LEVELS: LEVELS, MAPS: MAPS, KEY: KEY, KEY_MAP: KEY_MAP };
+  global.Settings = {
+    create: create, LEVELS: LEVELS, MAPS: MAPS,
+    KEY: KEY, KEY_MAP: KEY_MAP, KEY_MAPV: KEY_MAPV, MAP_VERSION: MAP_VERSION
+  };
 })(window);

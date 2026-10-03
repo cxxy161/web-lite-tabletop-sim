@@ -39,11 +39,19 @@
     <button id="btn-none" type="button">取消</button>
     <button id="btn-marquee" type="button">框选</button>
     <button id="btn-flipall" type="button">翻面</button>
+    <button id="btn-roll" type="button">掷骰</button>
     <button id="btn-origin" type="button">原点</button>
     <button id="btn-fit" type="button">适配</button>
     <button id="btn-saves" type="button">存档</button>
     <button id="btn-load" type="button">读档</button>
+    <button id="btn-dice" type="button">加骰</button>
     <button id="btn-settings" type="button">设置</button>
+  </div>
+
+  <!-- 加骰：选面数 -->
+  <div id="dice-bar" hidden>
+    <span class="set-label">加骰子</span>
+    <div id="dice-opts" class="set-seg"></div>
   </div>
 
   <div id="settings" hidden>
@@ -89,6 +97,7 @@
 <script src="texture.js"></script>
 <script src="net.js"></script>
 <script src="settings.js"></script>
+<script src="dice.js"></script>
 <script src="menu.js"></script>
 <script src="saves.js"></script>
 <script src="app.js"></script>

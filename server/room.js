@@ -32,6 +32,11 @@ const SAVE_DEBOUNCE_MS = 5000;
 const MAX_BATCH = 2048;          // 单次批量移动上限，防畸形包
 const CLONE_OFFSET = 24;         // 克隆体的默认偏移（世界单位）
 
+// 骰子：面数白名单 + 各面数的世界边长。
+// 尺寸差异纯为观感 —— 数据上它们和棋子没有区别。
+const DICE_SIDES = [2, 4, 6, 10, 12];
+const DICE_SIZE = { 2: 44, 4: 46, 6: 48, 10: 52, 12: 56 };
+
 class Room {
   constructor(id, opts) {
     this.id = id;
@@ -40,6 +45,7 @@ class Room {
     this.seq = 0;
     this.zSeq = 0;
     this.cloneSeq = 0;         // 克隆 id 分配器
+    this.diceSeq = 0;          // 骰子 id 分配器
     this.clients = new Set();
     this.pieces = new Map();
     this.scene = '';             // 当前场景 slug
@@ -83,10 +89,17 @@ class Room {
         z: typeof p.z === 'number' ? p.z : 0,
         lk: p.lk ? 1 : 0,          // 冻结：不可拖动/翻面/旋转
         si: p.si | 0,              // 当前形态索引（st 的下标）
-        st: Array.isArray(p.st) && p.st.length ? p.st : null
+        st: Array.isArray(p.st) && p.st.length ? p.st : null,
+        ds: DICE_SIDES.indexOf(p.ds | 0) >= 0 ? (p.ds | 0) : 0,   // 面数，0=非骰子
+        v: p.v | 0                 // 当前点数
       };
       this.pieces.set(q.id, q);
       if (q.z > this.zSeq) this.zSeq = q.z;
+      // 从 id 里恢复分配器，避免重载后再加骰子撞 id
+      if (q.ds) {
+        const m = /^d(\d+)_/.exec(q.id);
+        if (m) { const n = parseInt(m[1], 10); if (n > this.diceSeq) this.diceSeq = n; }
+      }
     }
 
     this.scene = (meta && meta.scene) || '';
@@ -141,6 +154,7 @@ class Room {
       });
       this.zSeq = maxZ;
       this.cloneSeq = d.cloneSeq | 0;
+      this.diceSeq = d.diceSeq | 0;
       return true;
     } catch (_) {
       return false;
@@ -151,6 +165,7 @@ class Room {
     return {
       seq: this.seq,
       cloneSeq: this.cloneSeq,
+      diceSeq: this.diceSeq,
       scene: this.scene,
       label: this.label,
       pieces: Array.from(this.pieces.values())
@@ -324,7 +339,9 @@ class Room {
           z: ++this.zSeq,
           lk: 0,                      // 克隆出来的是解冻的
           si: src.si | 0,
-          st: src.st ? src.st.map((s) => ({ img: s.img, bimg: s.bimg, w: s.w, h: s.h })) : null
+          st: src.st ? src.st.map((s) => ({ img: s.img, bimg: s.bimg, w: s.w, h: s.h })) : null,
+          ds: src.ds | 0,
+          v: src.v | 0
         };
         this.pieces.set(id, p);
 
@@ -340,6 +357,61 @@ class Room {
         this.seq++;
         this.save();
         return { k: 'del', id: op.id };
+      }
+
+      // 加一颗骰子。骰子**就是棋子**，只是多两个字段：
+      //   ds = 面数（0/缺省 = 非骰子），v = 当前点数
+      // 这样它白拿棋子已有的同步、层叠序、拖动、克隆、删除、存档往返。
+      case 'dice': {
+        const sides = DICE_SIDES.indexOf(op.ds | 0) >= 0 ? (op.ds | 0) : 0;
+        if (!sides) return null;
+        if (!Room._finite(op.x) || !Room._finite(op.y)) return null;
+
+        const id = 'd' + (++this.diceSeq) + '_' + sides;
+        if (this.pieces.has(id)) return null;
+
+        const size = DICE_SIZE[sides] || 48;
+        const p = {
+          id,
+          x: op.x, y: op.y,
+          r: 0, f: 0,
+          w: size, h: size,
+          img: 'white', bimg: 'white',      // 骰子是画出来的，不用贴图
+          z: ++this.zSeq,
+          lk: 0, si: 0, st: null,
+          ds: sides,
+          v: 1
+        };
+        this.pieces.set(id, p);
+
+        this.seq++;
+        this.save();
+        return { k: 'dice', piece: p };
+      }
+
+      // 掷骰。**点数由服务端随机** —— 若让客户端各摇各的，
+      // 同一张桌上的两个人会看到不同的点数，那就不是骰子了。
+      case 'roll': {
+        const ids = Array.isArray(op.ids) ? op.ids : (op.id ? [op.id] : null);
+        if (!ids || !ids.length || ids.length > MAX_BATCH) return null;
+
+        // 先全量校验再落地（和 move 一样的理由：不要出现摇了一半）
+        for (let i = 0; i < ids.length; i++) {
+          const p = this.pieces.get(ids[i]);
+          if (!p || !p.ds || p.lk) return null;
+        }
+
+        const out = [];
+        for (let i = 0; i < ids.length; i++) {
+          const p = this.pieces.get(ids[i]);
+          p.v = 1 + Math.floor(Math.random() * p.ds);
+          p.z = ++this.zSeq;
+          out.push({ id: p.id, v: p.v, z: p.z, ds: p.ds });
+        }
+
+        this.seq++;
+        this.save();
+        return { k: 'roll', list: out };
       }
 
       default:
@@ -368,4 +440,4 @@ class RoomStore {
   }
 }
 
-module.exports = { Room, RoomStore, SAVE_DEBOUNCE_MS, MAX_BATCH, CLONE_OFFSET };
+module.exports = { Room, RoomStore, SAVE_DEBOUNCE_MS, MAX_BATCH, CLONE_OFFSET, DICE_SIDES, DICE_SIZE };
