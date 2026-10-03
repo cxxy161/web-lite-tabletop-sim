@@ -30,6 +30,13 @@ const MAX_ZONES = 32;
 const MIN_SIZE = 4;
 const MAX_SIZE = 1e7;
 const MAX_SEE = 8;
+// 上帝视角的队伍 id。**必须与服务端 rooms.js 里的队伍表一致** ——
+// 它和 'none'（默认队，什么都看不到）是两个相反的极端，别搞混。
+const GOD_TEAM = 'spec';
+
+function isGod(teamId) {
+  return teamId === GOD_TEAM;
+}
 const ZONE_ID = /^[A-Za-z0-9_-]{1,32}$/;
 
 function num(v) {
@@ -89,7 +96,7 @@ function inRect(px, py, z) {
  * 求一枚棋子对某队伍的可见性。
  * 返回 { hidden, blind } —— 两者不会同时为真。
  *
- * **旁观（teamId 为空）= 上帝视角，一切可见。**
+ * **旁观（teamId === 'spec'）= 上帝视角，一切可见。**
  * 这是刻意的：旁观者是「看棋的人」，看不到全部就没法看。
  *
  * ⚠️ 代价必须知道：队伍是**玩家在右上角自己选的**，所以任何在场的人
@@ -99,7 +106,7 @@ function inRect(px, py, z) {
  */
 function resolve(piece, zones, teamId) {
   if (!zones || !zones.length) return { hidden: false, blind: false };
-  if (!teamId) return { hidden: false, blind: false };   // 旁观 = 上帝视角
+  if (isGod(teamId)) return { hidden: false, blind: false };   // 旁观 = 上帝视角
 
   let granted = false, hidden = false, blind = false;
 
@@ -153,7 +160,7 @@ function pieceFor(piece, zones, teamId) {
 function zoneList(zones, teamId) {
   if (!zones || !zones.length) return [];
   // 旁观是上帝视角 -> 所有区域都看得见（含 hide 的框）
-  if (!teamId) return zones.slice();
+  if (isGod(teamId)) return zones.slice();
   return zones.filter(function (z) {
     if (z.mode !== 'hide') return true;
     return z.see.indexOf(teamId) >= 0;
@@ -167,6 +174,6 @@ function full(piece, zones, teamId) {
 }
 
 module.exports = {
-  MODES, MAX_ZONES, MIN_SIZE, MAX_SIZE,
+  MODES, MAX_ZONES, MIN_SIZE, MAX_SIZE, GOD_TEAM, isGod,
   normZone, inRect, resolve, pieceFor, zoneList, full, blindCopy
 };

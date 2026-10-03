@@ -1028,8 +1028,9 @@
         global.ZoneUI.setMyTeam(you.teamId || null);
       }
 
-      // 「视野区」按钮只给房主 —— 服务端也会硬拦（非房主发 zone op 被拒），
-      // 这里藏起来只是别让人白点。
+      // 「视野区」与「存档」都只给房主 ——
+      // 服务端也会硬拦（非房主调 /api/save 与 zone op 都被拒），
+      // 这里藏起来只是别让人白点、白输一遍。
       var elZb = document.getElementById('btn-zone');
       if (elZb) {
         elZb.hidden = !you.owner;
@@ -1038,6 +1039,11 @@
           if (bar) bar.hidden = true;
         }
       }
+
+      var elSavesRow = document.getElementById('saves-row');
+      if (elSavesRow) elSavesRow.hidden = !you.owner;
+      var elSavesNote = document.getElementById('saves-note');
+      if (elSavesNote) elSavesNote.hidden = !you.owner;
     },
 
     // 可见集差分（双盲）。

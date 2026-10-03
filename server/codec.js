@@ -134,6 +134,17 @@ function encode(pieces, meta) {
   if (!idsRegular) out.ids = ids;
   if (hasStates) out.st = states;
   if (hasTexts) out.tx = texts;
+
+  // 视野区也进存档。它是**盘面的一部分** —— 双盲规则和棋子位置
+  // 是一起被设计的，备份时只存棋子、不存区域，恢复出来就是
+  // 「棋子都在但全都能看见」，双盲静默失效，而且很难发现。
+  if (Array.isArray(meta && meta.zones) && meta.zones.length) {
+    out.z = meta.zones.map(function (z) {
+      return [r2(z.x), r2(z.y), r2(z.w), r2(z.h),
+              (z.see || []).join(','), z.mode === 'blind' ? 1 : 0,
+              String(z.name || '').slice(0, 24)];
+    });
+  }
   return out;
 }
 
@@ -263,8 +274,30 @@ function decode(obj) {
     });
   }
 
+  // 视野区：紧凑数组 [x,y,w,h,see,modeInt,name]
+  const zones = [];
+  if (Array.isArray(obj.z)) {
+    obj.z.forEach(function (r) {
+      if (!Array.isArray(r) || r.length < 6) throw new Error('视野区格式错误');
+      const [zx, zy, zw, zh, see, blind, name] = r;
+      for (const v of [zx, zy, zw, zh]) {
+        if (typeof v !== 'number' || !Number.isFinite(v)) {
+          throw new Error('视野区含非有限数值');
+        }
+      }
+      if (zw <= 0 || zh <= 0) throw new Error('视野区尺寸非法');
+      zones.push({
+        x: zx, y: zy, w: zw, h: zh,
+        see: String(see || '').split(',').filter(Boolean).slice(0, 8),
+        mode: blind ? 'blind' : 'hide',
+        name: String(name || '').slice(0, 24)
+      });
+    });
+  }
+
   return {
     pieces,
+    zones,
     label: String(obj.label || '').slice(0, 64),
     scene: String(obj.scene || '').slice(0, 64)
   };

@@ -99,14 +99,15 @@
     </div>
     <div id="map-note" class="set-note"></div>
 
-    <div class="set-row">
+    <div class="set-row" id="saves-row" hidden>
       <span class="set-label">存档</span>
       <div class="set-seg">
         <button id="btn-saves" type="button">导出</button>
         <button id="btn-load" type="button">导入</button>
       </div>
     </div>
-    <div class="set-note">导出得到 base64 文本，复制走即可；导入把文本粘回来。<b>不写文件</b>。</div>
+    <div class="set-note" id="saves-note" hidden>仅房主可导出/导入。导出得到 base64 文本，<b>不写文件</b>。
+      存档里含视野区 —— 恢复时双盲规则会一起回来。</div>
   </div>
 
   </div><!-- /panel-body -->

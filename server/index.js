@@ -231,10 +231,13 @@ async function handleRoomApi(req, res, urlPath, query) {
     if (!a) return;
 
     const target = String(payload.targetId || a.player.id);
-    // **权限校验**：不是房主就只能改自己。这一条是硬的 ——
-    // 前端把按钮藏起来只是体验，真正拦住越权的是这里。
-    if (target !== a.player.id && !a.room.isOwner(a.player.id)) {
-      return sendJson(res, 403, { error: '只有房主能调整别人的队伍' });
+    // **只有房主能改队伍，包括改自己。**
+    //
+    // 早期允许「自己改自己」，但那样队伍就不受控了：房里任何人都能
+    // 点一下切到红方、再点一下切到旁观看穿全部 —— 双盲形同虚设。
+    // 队伍是**房主分配的**，这才是它的语义。
+    if (!a.room.isOwner(a.player.id)) {
+      return sendJson(res, 403, { error: '只有房主能调整队伍' });
     }
     if (!a.room.get(target)) return sendJson(res, 404, { error: '玩家不在房间里' });
 
@@ -338,10 +341,25 @@ async function handleApi(req, res, urlPath, query) {
 
   /* 导出：房间状态 -> base64 字符串（不落文件） */
   if (urlPath === '/api/save') {
-    const room = rooms.get(sanitizeRoom(query.get('room')));
+    // **只有房主能导出**。
+    //
+    // 这条同时堵住了双盲的一个旁路：导出的是**全量**盘面
+    //（含看不见的棋子与视野区定义），任何成员能调它就能看到全部。
+    // 导出是「把整桌备份走」的管理动作，交给房主。
+    const code = normCode(query.get('room'));
+    const meta = registry.get(code);
+    if (!meta) return sendJson(res, 404, { error: '房间不存在' });
+    const me = meta.auth(ident(req).id, ident(req).token);
+    if (!me) return sendJson(res, 403, { error: '身份无效，请重新加入房间' });
+    if (!meta.isOwner(me.id)) {
+      return sendJson(res, 403, { error: '只有房主能导出存档' });
+    }
+
+    const room = rooms.get(sanitizeRoom(code));
     const compact = codec.encode(Array.from(room.pieces.values()), {
       label: room.label,
-      scene: room.scene
+      scene: room.scene,
+      zones: room.zoneList          // 视野区也是盘面的一部分，见 codec.encode
     });
     const b64 = codec.toBase64(compact);
 
@@ -371,7 +389,17 @@ async function handleApi(req, res, urlPath, query) {
       return sendJson(res, 400, { error: '请求体不是 JSON' });
     }
 
-    const roomId = sanitizeRoom(payload.room);
+    // **只有房主能导入**：导入会整盘替换（含视野区），
+    // 等于把所有人的局面和规则一起改掉，是房间级操作。
+    const meta = registry.get(normCode(payload.room));
+    if (!meta) return sendJson(res, 404, { error: '房间不存在' });
+    const me = meta.auth(ident(req).id, ident(req).token);
+    if (!me) return sendJson(res, 403, { error: '身份无效，请重新加入房间' });
+    if (!meta.isOwner(me.id)) {
+      return sendJson(res, 403, { error: '只有房主能导入存档' });
+    }
+
+    const roomId = sanitizeRoom(meta.code);
 
     let decoded;
     try {
@@ -384,7 +412,8 @@ async function handleApi(req, res, urlPath, query) {
     const room = rooms.get(roomId);
     const n = room.loadPieces(decoded.pieces, {
       scene: payload.scene || '',
-      label: decoded.label
+      label: decoded.label,
+      zones: decoded.zones           // 视野区随盘面一起替换
     });
 
     // 盘面整个换了，增量补发没有意义 —— 直接给所有人推一份新快照

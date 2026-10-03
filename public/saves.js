@@ -41,9 +41,19 @@
     msg.className = kind || '';
   }
 
+  // 带上身份：服务端只允许房主导出/导入
+  function authHeaders(extra) {
+    var h = extra || {};
+    if (global.Identity) {
+      var me = global.Identity.get(ROOM);
+      if (me) { h['X-Player-Id'] = me.id; h['X-Player-Token'] = me.token; }
+    }
+    return h;
+  }
+
   function doExport() {
     setMsg('导出中…');
-    fetch('/api/save?room=' + encodeURIComponent(ROOM))
+    fetch('/api/save?room=' + encodeURIComponent(ROOM), { headers: authHeaders() })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d.error) { setMsg('导出失败：' + d.error, 'err'); return; }
@@ -63,7 +73,7 @@
     setMsg('导入中…');
     fetch('/api/load', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ room: ROOM, data: v })
     })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })

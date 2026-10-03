@@ -86,7 +86,7 @@ function makePlayer(name, isOwner) {
     id: randId('p_'),
     token: randToken(),
     name: cleanName(name, '玩家'),
-    teamId: null,
+    teamId: 'none',            // 默认「旁观」队：两家禁视区都看不到它
     owner: !!isOwner,
     online: false,
     joinedAt: Date.now(),
@@ -99,7 +99,7 @@ function publicPlayer(p) {
   return {
     id: p.id,
     name: p.name,
-    teamId: p.teamId || null,
+    teamId: p.teamId || 'none',
     owner: !!p.owner,
     online: !!p.online
   };
@@ -118,9 +118,20 @@ class RoomMeta {
     this.ownerId = null;
     this.createdAt = Date.now();
     this.players = new Map();      // id -> player
+    // 四支队伍。注意 'none' 与 'spec' 是**两回事**，别合并：
+    //
+    //   none  刚进房间的默认队。两家禁视区都看不到它 ——
+    //         也就是「还没入座的人」。新玩家先落这里，等房主分配。
+    //   spec  旁观（上帝视角），一切可见。是「看棋的人」用的。
+    //
+    // 为什么不能合并成一个：默认队必须**看不到**双方的秘密
+    //（否则新人一进房间就能看穿全部），而旁观必须**看得到**全部
+    //（否则没法看棋）。同一个队不可能同时满足。
     this.teams = [
-      { id: 'red', name: '红方', color: '#b4453a' },
-      { id: 'blue', name: '蓝方', color: '#3a7bd5' }
+      { id: 'none', name: '未入座', color: '#8d8371' },
+      { id: 'red',  name: '红方', color: '#b4453a' },
+      { id: 'blue', name: '蓝方', color: '#3a7bd5' },
+      { id: 'spec', name: '旁观', color: '#6b6252', god: true }
     ];
     this._timer = null;
   }
@@ -152,7 +163,8 @@ class RoomMeta {
         id: p.id,
         token: p.token || randToken(),
         name: cleanName(p.name, '玩家'),
-        teamId: p.teamId || null,
+        // 老存档里未分配是 null，统一归到 'none'
+        teamId: p.teamId || 'none',
         owner: !!p.owner,
         // 进程重启后没人连着，一律先标离线；真的连上会置回 true
         online: false,
@@ -245,8 +257,11 @@ class RoomMeta {
   setTeam(id, teamId) {
     const p = this.players.get(id);
     if (!p) return false;
-    if (teamId != null && !this.teams.some((t) => t.id === teamId)) return false;
-    p.teamId = teamId || null;
+    // null 归到 'none'（旁观）—— 保持「总是有队」这一个不变量，
+    // 免得下游到处判 null。
+    const t = teamId || 'none';
+    if (!this.teams.some((x) => x.id === t)) return false;
+    p.teamId = t;
     p.lastSeen = Date.now();
     this.save();
     return true;

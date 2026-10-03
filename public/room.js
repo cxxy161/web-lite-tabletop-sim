@@ -78,28 +78,16 @@
         row.appendChild(off);
       }
 
-      // 房主可以改别人的队伍 / 踢人（不能对自己）
+      // 房主：点这一行弹出该玩家的操作菜单。
+      //
+      // 原来是「点一下轮流换队」，**问题很大**：一屋子里所有人都
+      // 盯着屏幕，房主点两下就把某人的队伍从红切到蓝、再切到旁观，
+      // 中间状态全被看见了；而且想指定「到某一队」得点几次全凭运气。
+      // 改成菜单后是「看一眼、选一下」，一步到位、也不泄露过程。
       if (isOwner && p.id !== me.id) {
-        var act = document.createElement('span');
-        act.className = 'pl-act';
-
-        var bk = document.createElement('button');
-        bk.type = 'button';
-        bk.textContent = '踢出';
-        bk.className = 'kick';
-        bk.addEventListener('click', function (e) {
-          e.stopPropagation();
-          if (global.confirm('把「' + p.name + '」踢出房间？')) kick(p.id);
-        });
-        act.appendChild(bk);
-        row.appendChild(act);
-      }
-
-      // 点玩家行 = 房主循环给他换队（比弹菜单快，手机上尤其）
-      if (isOwner && p.id !== me.id) {
-        row.title = '点击更换队伍';
+        row.title = '点击管理 ' + p.name;
         row.style.cursor = 'pointer';
-        row.addEventListener('click', function () { cycleTeam(p); });
+        row.addEventListener('click', function () { openPlayerMenu(p, row); });
       }
 
       elList.appendChild(row);
@@ -108,25 +96,29 @@
     renderTeams(me);
   }
 
-  // 「我的队伍」分段按钮：旁观 + 各队
+  /**
+   * 「我的队伍」——**只读显示**，不可点击。
+   *
+   * 队伍由房主分配（服务端硬校验，自己改也会被拒）。
+   * 这里不再渲染成可点的按钮，否则点下去只会得到一个 403，
+   * 让人以为是坏了。
+   */
   function renderTeams(me) {
     elTeams.innerHTML = '';
+    var cur = me.teamId || 'none';
 
-    var opts = [{ id: null, name: '旁观' }].concat(
-      (state.room.teams || []).map(function (t) { return { id: t.id, name: t.name }; })
-    );
-
-    opts.forEach(function (o) {
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = o.name;
-      b.className = (me.teamId || null) === o.id ? 'on' : '';
-      b.addEventListener('click', function () {
-        if ((me.teamId || null) === o.id) return;
-        setMyTeam(o.id);
-      });
+    (state.room.teams || []).forEach(function (t) {
+      var b = document.createElement('span');
+      b.className = 'pl-team-chip' + (t.id === cur ? ' on' : '');
+      b.textContent = t.name;
+      if (t.color) b.style.color = t.color;
       elTeams.appendChild(b);
     });
+
+    var hint = document.createElement('span');
+    hint.className = 'pl-team-hint';
+    hint.textContent = state.you && state.you.owner ? '（点玩家可分配）' : '（由房主分配）';
+    elTeams.appendChild(hint);
   }
 
   /* ---------- 操作 ---------- */
@@ -139,19 +131,73 @@
       });
   }
 
-  function setMyTeam(teamId) {
-    call('/api/room/team', { targetId: state.you.id, teamId: teamId });
+  var menuEl = null;
+
+  function closeMenu() {
+    if (menuEl && menuEl.parentNode) menuEl.parentNode.removeChild(menuEl);
+    menuEl = null;
   }
 
-  function cycleTeam(p) {
-    // 旁观 -> 红 -> 蓝 -> 旁观
-    var order = [null].concat((state.room.teams || []).map(function (t) { return t.id; }));
-    var idx = order.indexOf(p.teamId || null);
-    var next = order[(idx + 1) % order.length];
-    call('/api/room/team', { targetId: p.id, teamId: next });
+  /**
+   * 玩家管理菜单：分配队伍 + 踢出。
+   *
+   * 用自建的小浮层而不是复用棋子的 #menu —— 那个是「对棋子操作」的，
+   * 混进玩家操作会让两边的状态纠缠（比如菜单开着时换了选择）。
+   */
+  function openPlayerMenu(p, anchorRow) {
+    closeMenu();
+
+    menuEl = document.createElement('div');
+    menuEl.className = 'pl-menu';
+
+    var head = document.createElement('div');
+    head.className = 'pl-menu-head';
+    head.textContent = p.name;
+    menuEl.appendChild(head);
+
+    var cur = p.teamId || 'none';
+    (state.room.teams || []).forEach(function (t) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'pl-menu-item' + (t.id === cur ? ' on' : '');
+      b.textContent = (t.id === cur ? '● ' : '○ ') + t.name;
+      if (t.color) {
+        var dot = document.createElement('span');
+        dot.className = 'pl-menu-dot';
+        dot.style.background = t.color;
+        b.insertBefore(dot, b.firstChild);
+      }
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeMenu();
+        if (t.id !== cur) call('/api/room/team', { targetId: p.id, teamId: t.id });
+      });
+      menuEl.appendChild(b);
+    });
+
+    var sep = document.createElement('div');
+    sep.className = 'menu-sep';
+    menuEl.appendChild(sep);
+
+    var kick = document.createElement('button');
+    kick.type = 'button';
+    kick.className = 'pl-menu-item danger';
+    kick.textContent = '踢出房间';
+    kick.addEventListener('click', function (e) {
+      e.stopPropagation();
+      closeMenu();
+      if (global.confirm('把「' + p.name + '」踢出房间？')) kickPlayer(p.id);
+    });
+    menuEl.appendChild(kick);
+
+    // 定位到那一行下方
+    var r = anchorRow.getBoundingClientRect();
+    menuEl.style.left = Math.max(6, Math.min(r.left, global.innerWidth - 150)) + 'px';
+    menuEl.style.top = (r.bottom + 2) + 'px';
+    document.body.appendChild(menuEl);
   }
 
-  function kick(id) {
+  function kickPlayer(id) {
     call('/api/room/kick', { targetId: id });
   }
 
@@ -159,6 +205,16 @@
     // 现在先借 HUD 的位置显示；阶段 4 会做正式的消息流
     if (global.__roomToast) global.__roomToast(text);
   }
+
+  // 点别处 / Esc 关掉玩家菜单
+  global.addEventListener('pointerdown', function (e) {
+    if (!menuEl) return;
+    if (menuEl.contains(e.target)) return;
+    closeMenu();
+  }, true);
+  global.addEventListener('keydown', function (e) {
+    if (menuEl && e.key === 'Escape') { e.stopPropagation(); closeMenu(); }
+  }, true);
 
   /* ---------- 对外 ---------- */
 

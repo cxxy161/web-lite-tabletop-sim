@@ -604,3 +604,56 @@ button.primary:disabled{opacity:.55;cursor:default}
   font:inherit;font-size:10px;cursor:pointer;
 }
 .zone-del:hover{background:#f7e8e4;color:#b4453a}
+
+/* ---------- 玩家管理菜单（房主） ---------- */
+
+.pl-menu{
+  position:fixed;z-index:7;
+  min-width:140px;
+  display:flex;flex-direction:column;
+  padding:4px;
+  background:var(--panel);
+  border:1px solid var(--line-2);
+  border-radius:8px;
+  box-shadow:0 8px 24px rgba(90,78,60,.20);
+}
+.pl-menu-head{
+  padding:4px 8px 5px;
+  font-size:11px;color:var(--dim);
+  border-bottom:1px solid var(--line);
+  margin-bottom:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.pl-menu-item{
+  appearance:none;
+  display:flex;align-items:center;gap:6px;
+  width:100%;text-align:left;
+  border:0;background:transparent;
+  color:var(--fg);
+  padding:6px 9px;border-radius:5px;
+  font:inherit;font-size:12px;
+  cursor:pointer;
+  white-space:nowrap;
+}
+.pl-menu-item:hover{background:#f0e9db}
+.pl-menu-item.on{background:#efe0d4;color:var(--accent);font-weight:600}
+.pl-menu-item.danger{color:#b4453a}
+.pl-menu-item.danger:hover{background:#f7e8e4}
+.pl-menu-dot{
+  width:8px;height:8px;border-radius:50%;flex:none;
+  display:inline-block;
+}
+
+/* 队伍只读显示 */
+.pl-team{flex-wrap:wrap}
+.pl-team-chip{
+  font-size:11px;
+  padding:2px 7px;border-radius:5px;
+  background:#efe9dc;
+  color:var(--dim);
+}
+.pl-team-chip.on{
+  background:#efe0d4;
+  font-weight:600;
+}
+.pl-team-hint{font-size:10px;color:var(--dim);opacity:.8}
