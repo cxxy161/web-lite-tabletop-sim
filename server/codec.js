@@ -60,6 +60,8 @@ function encode(pieces, meta) {
 
   const rows = [];
   const ids = [];
+  const states = {};             // 稀疏：只有多形态的棋子才落这里
+  let hasStates = false;
   let idsRegular = true;
 
   for (let i = 0; i < pieces.length; i++) {
@@ -68,8 +70,17 @@ function encode(pieces, meta) {
       r2(p.x), r2(p.y), r1(p.r || 0), p.f ? 1 : 0,
       r2(p.w), r2(p.h),
       aid(p.img), aid(p.bimg),
-      p.z | 0
+      p.z | 0,
+      p.lk ? 1 : 0,              // 10: 冻结
+      p.si | 0                   // 11: 当前形态下标
     ]);
+
+    // 形态数组只对多形态棋子存（778 枚里只有 59 枚有）。
+    // 全量存的话每行都要多塞一个数组，体积翻倍且 92% 是冗余。
+    if (Array.isArray(p.st) && p.st.length > 1) {
+      states[i] = p.st.map((s) => [aid(s.img), aid(s.bimg), r2(s.w), r2(s.h)]);
+      hasStates = true;
+    }
 
     // 绝大多数场景的 id 就是 t000/t001…，能按下标还原，不必写进存档。
     // 只有不规整时才落 ids 表，省掉几 KB。
@@ -86,6 +97,7 @@ function encode(pieces, meta) {
     p: rows
   };
   if (!idsRegular) out.ids = ids;
+  if (hasStates) out.st = states;
   return out;
 }
 
@@ -107,6 +119,14 @@ function decode(obj) {
   const pieces = [];
   const seen = new Set();
   const ids = Array.isArray(obj.ids) ? obj.ids : null;
+  const stMap = (obj.st && typeof obj.st === 'object') ? obj.st : null;
+
+  function resolveTex(idx, where) {
+    if (idx < 0) return null;
+    const t = dict[idx];
+    if (typeof t !== 'string') throw new Error(where + ' 贴图下标越界');
+    return t;
+  }
 
   for (let i = 0; i < obj.p.length; i++) {
     const r = obj.p[i];
@@ -119,12 +139,39 @@ function decode(obj) {
     }
 
     const [x, y, rot, f, w, h, ai, bi, z] = r;
+    // 行结构 = [x,y,rot,f,w,h,ai,bi,z,lk,si]，共 11 项、下标 0..10。
+    // 注意 si 在 **10** 不是 11 —— 早期写成 r[11] 恒为 undefined，
+    // 于是 si 永远解析成 0：形态选择被静默重置，
+    // 而且「下标越界」这条校验也永远不触发。
+    const lk = r.length > 9 ? (r[9] ? 1 : 0) : 0;
+    const si = r.length > 10 ? (r[10] | 0) : 0;
 
-    const img = ai >= 0 ? dict[ai] : null;
-    const bimg = bi >= 0 ? dict[bi] : null;
-    if (ai >= 0 && typeof img !== 'string') throw new Error('第 ' + i + ' 行贴图下标越界');
-    if (bi >= 0 && typeof bimg !== 'string') throw new Error('第 ' + i + ' 行贴图下标越界');
+    const img = resolveTex(ai, '第 ' + i + ' 行');
+    const bimg = resolveTex(bi, '第 ' + i + ' 行');
     if (w <= 0 || h <= 0) throw new Error('第 ' + i + ' 行尺寸非法');
+
+    // 形态数组：稀疏存放在 st 表里，键是行下标
+    let st = null;
+    if (stMap && stMap[i] != null) {
+      const raw = stMap[i];
+      if (!Array.isArray(raw) || raw.length < 1) throw new Error('第 ' + i + ' 行形态格式错误');
+      st = raw.map((s, j) => {
+        if (!Array.isArray(s) || s.length < 4) throw new Error('第 ' + i + ' 行形态 ' + j + ' 格式错误');
+        const [sa, sb, sw, sh] = s;
+        for (const v of s) {
+          if (typeof v !== 'number' || !Number.isFinite(v)) {
+            throw new Error('第 ' + i + ' 行形态 ' + j + ' 含非有限数值');
+          }
+        }
+        if (sw <= 0 || sh <= 0) throw new Error('第 ' + i + ' 行形态 ' + j + ' 尺寸非法');
+        const simg = resolveTex(sa, '第 ' + i + ' 行形态');
+        const sbimg = resolveTex(sb, '第 ' + i + ' 行形态');
+        return { img: simg || sbimg, bimg: sbimg || simg, w: sw, h: sh };
+      });
+      if (si < 0 || si >= st.length) throw new Error('第 ' + i + ' 行形态下标越界');
+    } else if (si !== 0) {
+      throw new Error('第 ' + i + ' 行有形态下标但没有形态数据');
+    }
 
     // id 必须还原成原样，不能按下标另起一套命名 ——
     // 否则「导出再导入」之后所有 id 都变了，
@@ -140,15 +187,26 @@ function decode(obj) {
     if (seen.has(id)) throw new Error('id 重复: ' + id);
     seen.add(id);
 
+    // 多形态棋子的当前图片/尺寸以形态表为准（st 是权威，
+    // 行里的 img/w 只是写入时的快照，两者理应一致，以 st 为准更稳）
+    let fimg = img || bimg, fbimg = bimg || img, fw = w, fh = h;
+    if (st) {
+      const cur = st[si] || st[0];
+      fimg = cur.img; fbimg = cur.bimg; fw = cur.w; fh = cur.h;
+    }
+
     pieces.push({
       id,
       x, y,
       r: ((Math.round(rot) % 360) + 360) % 360,
       f: f ? 1 : 0,
-      w, h,
-      img: img || bimg,
-      bimg: bimg || img,
-      z
+      w: fw, h: fh,
+      img: fimg,
+      bimg: fbimg,
+      z,
+      lk,
+      si,
+      st
     });
   }
 

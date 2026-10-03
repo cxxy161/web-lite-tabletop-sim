@@ -234,6 +234,7 @@ def convert_save(save, index):
     """TTS 存档 dict -> 我们的场景 dict"""
     pieces = []
     skipped = {}
+    no_state_asset = 0
 
     for i, o in enumerate(save.get('ObjectStates', [])):
         name = o.get('Name')
@@ -247,7 +248,6 @@ def convert_save(save, index):
             skipped['Custom_Tile(no image)'] = skipped.get('Custom_Tile(no image)', 0) + 1
             continue
 
-        # States（备用形态）Phase 1 不展开：主 CustomImage 就是当前显示面
         fe = index.get(fu)
         be = index.get(bu) if bu else None
         if not fe:
@@ -262,16 +262,50 @@ def convert_save(save, index):
         aspect = (fe['w'] / float(fe['h'])) if fe.get('h') else 1.0
         h = w / aspect if aspect else w
 
+        # ---- 形态（TTS 的 States / 右键 Alternate）----
+        #
+        # 数据形状：**顶层对象就是当前形态**，States 字典里是其余形态。
+        # 所以形态总数 = 1 + len(States)，索引 0 是当前形态。
+        # 每个形态有自己的 CustomImage（图片）和 Transform.scale
+        #（实测同对象内各形态 scale 一致，但不同对象的 scale 差很多，
+        #  底图板块和卡牌不是一个量级，所以宽高还是要按形态自己算）。
+        #
+        # 形态自带 Transform 里的坐标是残留数据 —— TTS 切形态时位置不变，
+        # 所以这里**只取图片和尺寸，位置一律沿用顶层**。
+        states = [{'img': fe['id'], 'bimg': (be or fe)['id'], 'w': round(w, 2), 'h': round(h, 2)}]
+
+        for key in sorted((o.get('States') or {}).keys(), key=lambda k: int(k) if str(k).isdigit() else 0):
+            st = o['States'][key]
+            sci = st.get('CustomImage') or {}
+            su = sci.get('ImageURL')
+            se = index.get(su) if su else None
+            if not se:
+                no_state_asset += 1
+                continue
+
+            st_t = st.get('Transform') or {}
+            st_scale = st_t.get('scaleX', scale) or scale
+            sw = BASE_TILE * st_scale
+            sa = (se['w'] / float(se['h'])) if se.get('h') else 1.0
+            sh = sw / sa if sa else sw
+            sb = index.get(sci.get('ImageSecondaryURL')) if sci.get('ImageSecondaryURL') else None
+
+            states.append({
+                'img': se['id'],
+                'bimg': (sb or se)['id'],
+                'w': round(sw, 2),
+                'h': round(sh, 2),
+            })
+
         pieces.append({
             'id': 't%03d' % i,
-            # 绕场景中心 180° 旋转：posX 与 posZ 同时取反。
-            #
-            # 为什么是「两个都反」而不是只反 Z：
-            #   这个约定下 r = 180 - rotY 才是自洽的（见文件头推导）。
-            #   早期只反了一半（x 用 +、y 用 +），旋转量与位置约定打架，
-            #   表现就是「卡片内容正了，但卡片之间的相对位置是反的」。
-            'x': round(-t.get('posX', 0.0) * WORLD, 3),
-            'y': round(-t.get('posZ', 0.0) * WORLD, 3),
+            # 这里输出 **TTS 原始符号**（x=+posX, y=+posZ），不做任何翻转：
+            # 位置映射是「显示约定」，放在前端做（app.js 的映射档位），
+            # 这样切换映射不用重新构建资产，也能让用户当场看到对错。
+            # 早期把翻转烘进构建脚本，导致每次都要重跑管线 + 重启服务，
+            # 试错成本高，而且我连着猜错了几轮。
+            'x': round(t.get('posX', 0.0) * WORLD, 3),
+            'y': round(t.get('posZ', 0.0) * WORLD, 3),
             'r': round(norm360(180.0 - t.get('rotY', 0.0)), 2),
             'f': 1 if is_face_down(t) else 0,
             'w': round(w, 2),
@@ -279,7 +313,12 @@ def convert_save(save, index):
             'img': fe['id'],
             'bimg': (be or fe)['id'],
             'z': i,                                        # 数组序 = 层叠序，后面的在上
+            'lk': 1 if o.get('Locked') else 0,             # 冻结
+            'st': states,                                  # 形态数组，st[0] = 当前形态
         })
+
+    if no_state_asset:
+        skipped['States(no asset)'] = no_state_asset
 
     return {
         'name': save.get('SaveName') or '',

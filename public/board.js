@@ -74,6 +74,11 @@
     var pointers = new Map();  // pointerId -> {x,y} 屏幕坐标
     var gest = null;
 
+    // 框选矩形（屏幕坐标）。非 null 时 drawFg 会画出来。
+    // 只有调用方通过 marqueeEnabled() 打开时才允许触发。
+    var marquee = null;
+    var marqueeEnabled = false;
+
     /* ---------- 视变换 ---------- */
 
     function syncOrigin() {
@@ -177,6 +182,24 @@
       var g = fctx;
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.clearRect(0, 0, size.w, size.h);
+
+      // 框选矩形画在屏幕坐标系（不随缩放的线宽变化，视觉更稳）
+      if (marquee) {
+        var x = Math.min(marquee.x0, marquee.x1);
+        var y = Math.min(marquee.y0, marquee.y1);
+        var w = Math.abs(marquee.x1 - marquee.x0);
+        var h = Math.abs(marquee.y1 - marquee.y0);
+
+        g.save();
+        g.fillStyle = 'rgba(194,112,63,.12)';
+        g.fillRect(x, y, w, h);
+        g.strokeStyle = '#c2703f';
+        g.lineWidth = 1;
+        g.setLineDash([4, 3]);
+        g.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.round(w), Math.round(h));
+        g.restore();
+      }
+
       if (!drawer) return;
 
       g.save();
@@ -269,7 +292,7 @@
             g0.lpTimer = 0;
             if (gest !== g0 || g0.mode) return;   // 已经变成拖拽/平移了
             g0.lpFired = true;
-            opts.onLongPress(g0.hit);
+            opts.onLongPress(g0.hit, { x: g0.sx0, y: g0.sy0 });
           }, LONGPRESS_MS);
         }
 
@@ -339,10 +362,26 @@
       if (!gest.mode) {
         if (Math.abs(dx) < SLOP && Math.abs(dy) < SLOP) return;
         clearLp(gest);                       // 开始移动 -> 不再算长按
-        gest.mode = gest.hit ? 'drag' : 'pan';
+        if (gest.hit) {
+          gest.mode = 'drag';
+        } else if (marqueeEnabled || e.shiftKey) {
+          // 空白处拖动 = 框选。
+          // 两种触发：工具栏的「框选」开关（手机用），
+          // 或按住 Shift 拖（桌面习惯，和多数绘图软件一致）。
+          gest.mode = 'marquee';
+          marquee = { x0: gest.sx0, y0: gest.sy0, x1: p.x, y1: p.y };
+        } else {
+          gest.mode = 'pan';
+        }
         if (gest.mode === 'drag' && opts.onDragStart) {
           opts.onDragStart(gest.hit, gest.w0.x, gest.w0.y);
         }
+      }
+
+      if (gest.mode === 'marquee') {
+        marquee.x1 = p.x; marquee.y1 = p.y;
+        requestDraw();
+        return;
       }
 
       if (gest.mode === 'pan') {
@@ -387,6 +426,23 @@
       }
 
       if (pointers.size === 0) {
+        // 框选结束：把矩形换算成世界坐标交给调用方
+        if (gest.mode === 'marquee' && marquee) {
+          var a0 = screenToWorld(marquee.x0, marquee.y0);
+          var a1 = screenToWorld(marquee.x1, marquee.y1);
+          var box = {
+            x0: Math.min(a0.x, a1.x), y0: Math.min(a0.y, a1.y),
+            x1: Math.max(a0.x, a1.x), y1: Math.max(a0.y, a1.y)
+          };
+          var additive = gest.multi || !!e.shiftKey;   // shift+框选 = 追加
+          marquee = null;
+          fg.classList.remove('grabbing');
+          gest = null;
+          if (opts.onMarquee) opts.onMarquee(box, additive);
+          requestBg(); requestDraw();
+          return;
+        }
+
         // 长按已经处理过这次按下，抬指时不能再当成点击
         var wasTap = !gest.mode && !gest.multi && !gest.lpFired &&
                      (nowMs() - gest.tStart) < TAP_MS;
@@ -440,6 +496,8 @@
       // 漏掉的话 shift+右键会退化成普通右键。
       opts.onContext({
         wx: w.x, wy: w.y,
+        sx: p.x, sy: p.y,          // 局部屏幕坐标，供菜单定位
+        clientX: e.clientX, clientY: e.clientY,
         shiftKey: !!e.shiftKey,
         hit: hitTest ? hitTest(w.x, w.y) : null
       });
@@ -472,6 +530,13 @@
       requestBg: requestBg,
 
       setDrawer: function (fn) { drawer = fn; requestDraw(); },
+
+      // 打开后：空白处拖动 = 框选；关闭则恢复为平移地图
+      setMarquee: function (on) {
+        marqueeEnabled = !!on;
+        if (!on) { marquee = null; requestDraw(); }
+      },
+      isMarquee: function () { return marqueeEnabled; },
       setHitTest: function (fn) { hitTest = fn; }
     };
   }

@@ -94,6 +94,45 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
 
 .set-note{font-size:11px;color:var(--dim);line-height:1.45;max-width:360px}
 
+/* ---------- 棋子菜单（桌面右键 / 手机长按） ---------- */
+
+#menu{
+  position:fixed;z-index:6;
+  min-width:150px;
+  display:flex;flex-direction:column;
+  padding:4px;
+  background:var(--panel);
+  border:1px solid var(--line-2);
+  border-radius:9px;
+  box-shadow:0 8px 26px rgba(90,78,60,.20);
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);
+}
+#menu[hidden]{display:none}
+
+#menu button{
+  appearance:none;
+  display:flex;align-items:baseline;gap:6px;
+  width:100%;text-align:left;
+  border:0;background:transparent;
+  color:var(--fg);
+  padding:8px 12px;border-radius:6px;
+  font:inherit;font-size:13px;
+  cursor:pointer;
+  white-space:nowrap;
+}
+#menu button:hover:not(:disabled){background:#f0e9db}
+#menu button:active:not(:disabled){background:#e6dcc8}
+#menu button:disabled{color:#bdb4a3;cursor:default}
+
+/* 删除用红色提示，避免误点 */
+#menu button.danger{color:#b4453a}
+#menu button.danger:hover{background:#f7e8e4}
+
+.menu-note{font-size:11px;color:var(--dim);font-weight:400}
+#menu button.danger .menu-note{color:#c98a80}
+
+.menu-sep{height:1px;margin:4px 6px;background:var(--line)}
+
 /* ---------- 存档 / 读档面板 ---------- */
 
 #saves{

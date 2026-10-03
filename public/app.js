@@ -55,6 +55,24 @@
   var order = [];
   var orderDirty = true;
 
+  /* ---------- 位置映射 ---------- */
+
+  // TTS 的 (posX, posZ) -> 画布 (x, y) 有 4 种轴符号组合，纯数学推不唯一
+  //（透视缩略图信噪比太低），所以做成设置项由使用者目视选定。
+  //
+  // 关键性质：这个映射**只翻转符号，是自逆的**（应用两次 = 恒等）。
+  // 因此「显示坐标 -> 原始坐标」和「原始坐标 -> 显示坐标」是同一个函数，
+  // 不用写两套。约定：
+  //   服务端与磁盘始终存 **TTS 原始坐标**；
+  //   客户端内存里始终是 **显示坐标**。
+  //   init / 远端 op 进来时 原始->显示；发出去的 op 显示->原始。
+  // 这样换映射档位不会污染数据，导出存档也永远是一致的原始坐标。
+  var mapSX = 1, mapSY = 1;
+
+  function mapPt(x, y) {
+    return { x: x * mapSX, y: y * mapSY };
+  }
+
   var elHudRoom = document.getElementById('hud-room');
   var elHudConn = document.getElementById('hud-conn');
   var elHudPeers = document.getElementById('hud-peers');
@@ -84,6 +102,7 @@
     onTap: onTap,
     onContext: onContext,
     onLongPress: onLongPress,
+    onMarquee: onMarquee,
     onDragStart: onDragStart,
     onDragMove: onDragMove,
     onDragEnd: onDragEnd
@@ -149,6 +168,7 @@
           } else {
             g.drawImage(t.img, cx - hw, cy - hh, p.w, p.h);
           }
+          if (p.lk) strokeLock(g, cx - hw, cy - hh, p.w, p.h, s);
           if (selection.has(p.id) && showRing) strokeSel(g, cx - hw, cy - hh, p.w, p.h, s);
         } else {
           g.save();
@@ -156,6 +176,7 @@
           g.rotate(rr * Math.PI / 180);
           g.drawImage(t.img, -hw, -hh, p.w, p.h);
           g.restore();
+          if (p.lk) strokeLock(g, cx - hw, cy - hh, p.w, p.h, s);
           if (selection.has(p.id) && showRing) {
             // 选中框不跟着转，保持正立，否则旋转的棋子选框会歪
             strokeSel(g, cx - hw, cy - hh, p.w, p.h, s);
@@ -171,6 +192,17 @@
     g.strokeStyle = ACCENT;
     g.lineWidth = 2.5 / Math.max(s, 0.05);
     g.strokeRect(x, y, w, h);
+  }
+
+  // 冻结标记：虚线框。故意用和选中框不同的画法（虚线 vs 实线、
+  // 灰色 vs 橙色），这样「选中且冻结」时两种状态都能看出来。
+  function strokeLock(g, x, y, w, h, s) {
+    g.save();
+    g.strokeStyle = 'rgba(90,120,150,.85)';
+    g.lineWidth = 1.6 / Math.max(s, 0.05);
+    g.setLineDash([5 / Math.max(s, 0.05), 3 / Math.max(s, 0.05)]);
+    g.strokeRect(x, y, w, h);
+    g.restore();
   }
 
   /* ---------- 顺序 / 命中 ---------- */
@@ -198,17 +230,60 @@
     return null;
   }
 
+  // 该点下方的**所有**棋子，最上面的排在前。
+  //
+  // pick 只给最上面那枚，但「拖底下的棋子」需要看见被压住的那些 ——
+  // 否则底层棋子永远抓不到，需求二无从触发。
+  function pickAll(wx, wy) {
+    var list = ordered();
+    var out = [];
+    for (var i = list.length - 1; i >= 0; i--) {
+      var p = list[i];
+      var hw = p.w / 2, hh = p.h / 2;
+      if (wx >= p.x - hw && wx <= p.x + hw &&
+          wy >= p.y - hh && wy <= p.y + hh) {
+        out.push(p);
+      }
+    }
+    return out;   // 最上面在前
+  }
+
   /* ---------- 操作 ---------- */
 
-  function sendOp(op) { net.send({ t: 'op', op: op }); }
+  function sendOp(op) {
+    // 发出去之前把显示坐标换回 TTS 原始坐标（自逆，同一函数）。
+    // 服务端与磁盘永远只认原始坐标，换映射档不会污染数据。
+    if (op.k === 'move' && op.list) {
+      var mapped = op.list.map(function (it) {
+        var q = mapPt(it.x, it.y);
+        return { id: it.id, x: q.x, y: q.y };
+      });
+      net.send({ t: 'op', op: { k: 'move', list: mapped } });
+      return;
+    }
+    if (op.k === 'clone') {
+      var c = mapPt(op.x, op.y);
+      net.send({ t: 'op', op: { k: 'clone', id: op.id, x: c.x, y: c.y } });
+      return;
+    }
+    net.send({ t: 'op', op: op });
+  }
 
   function applyOp(op, fromRemote) {
+    // 远端来的坐标是 TTS 原始坐标，落到内存前换成显示坐标。
+    // 本地乐观应用时 op 已经是显示坐标了，不能再换一次
+    //（所以只有 fromRemote 才走映射）。
     if (op.k === 'move' && Array.isArray(op.list)) {
       for (var i = 0; i < op.list.length; i++) {
         var it = op.list[i];
         var p = pieces.get(it.id);
         if (!p) continue;
-        p.x = it.x; p.y = it.y;
+        if (fromRemote) {
+          var w = mapPt(it.x, it.y);
+          p.x = w.x; p.y = w.y;
+        } else {
+          p.x = it.x; p.y = it.y;
+        }
         if (typeof it.z === 'number') {
           p.z = it.z;
           if (it.z > zMax) zMax = it.z;
@@ -218,11 +293,40 @@
       return;
     }
 
+    // 克隆：服务端回了完整棋子对象（原始坐标），转成显示坐标后入库
+    if (op.k === 'clone' && op.piece) {
+      var np = Object.assign({}, op.piece);
+      var cw = mapPt(np.x, np.y);
+      np.x = cw.x; np.y = cw.y;
+      pieces.set(np.id, np);
+      if (typeof np.z === 'number' && np.z > zMax) zMax = np.z;
+      orderDirty = true;
+      // 克隆体默认选中，方便接着拖
+      selection.clear();
+      selection.add(np.id);
+      syncHudSel();
+      return;
+    }
+
+    if (op.k === 'del') {
+      pieces.delete(op.id);
+      selection.delete(op.id);
+      syncHudSel();
+      orderDirty = true;
+      return;
+    }
+
     var q = pieces.get(op.id);
     if (!q) return;
 
     if (op.k === 'flip') q.f = op.f ? 1 : 0;
     else if (op.k === 'rot') q.r = ((op.r | 0) % 360 + 360) % 360;
+    else if (op.k === 'lock') q.lk = op.lk ? 1 : 0;
+    else if (op.k === 'state') {
+      q.si = op.si | 0;
+      q.img = op.img; q.bimg = op.bimg;
+      q.w = op.w; q.h = op.h;
+    }
 
     if (typeof op.z === 'number' && op.z > 0) {
       q.z = op.z;
@@ -278,22 +382,136 @@
 
     // onTap 只在「按下-抬起之间没拖动」时触发，
     // 所以这里可以放心：shift = 加选/减选，普通 = 替换选择。
-    if (e.shiftKey) toggleSelect(e.hit);
-    else selectOnly(e.hit);
+    if (e.shiftKey) { toggleSelect(e.hit); return; }
+
+    // 重叠时「渗选」：重复点同一处，依次选到下面那一枚。
+    //
+    // 没有这个的话底层棋子永远选不中（pick 总是给最上面的），
+    // 需求二「拖动底下的棋子」就无从触发。
+    // 交互上等同于多数绘图软件的「再点一次选中下面一层」。
+    var under = pickAll(e.wx, e.wy);
+    if (under.length > 1 && selection.size === 1) {
+      var cur = selection.values().next().value;
+      for (var i = 0; i < under.length - 1; i++) {
+        if (under[i].id === cur) {
+          selectOnly(under[i + 1]);
+          return;
+        }
+      }
+    }
+
+    selectOnly(e.hit);
   }
 
-  function onLongPress(hit) {
-    if (hit) toggleSelect(hit);      // 触屏加选（手机没有 shift）
-  }
-
-  function onDragStart(hit) {
+  // 长按（触屏）：弹出与右键相同的菜单。
+  // 手机没有右键，长按是唯一的入口；加选改由框选承担。
+  function onLongPress(hit, at) {
     if (!hit) return;
     if (!selection.has(hit.id)) selectOnly(hit);
+    // 长按点就是菜单锚点（board 传的是局部屏幕坐标）
+    var pos = at ? { x: at.x + 8, y: at.y + 8 }
+                 : { x: board.size.w / 2, y: board.size.h / 2 };
+    openMenu(hit, pos);
+  }
 
-    dragging = Array.from(selection);
+  // 框选：矩形相交即选中（不要求完全包含，手指框不准）
+  function onMarquee(box, additive) {
+    if (!additive) selection.clear();
+
+    pieces.forEach(function (p) {
+      var hw = p.w / 2, hh = p.h / 2;
+      if (p.x + hw < box.x0 || p.x - hw > box.x1) return;
+      if (p.y + hh < box.y0 || p.y - hh > box.y1) return;
+      selection.add(p.id);
+    });
+
+    syncHudSel();
+    board.requestDraw();
+  }
+
+  /* ---------- 被覆盖的棋子（拖动连带） ---------- */
+
+  // b 是否压住 a：z 更大且矩形相交
+  function covers(b, a) {
+    if (b === a) return false;
+    if ((b.z || 0) <= (a.z || 0)) return false;
+    return Math.abs(b.x - a.x) * 2 < (b.w + a.w) &&
+           Math.abs(b.y - a.y) * 2 < (b.h + a.h);
+  }
+
+  // 收集「直接或间接压在某些棋子上面」的全部棋子。
+  //
+  // 这是需求里的「移动底下的棋子会连带移动上面盖着的」。
+  // 做成**传递闭包**（A 压 B、B 压 C，拖 C 时 A、B 都跟着走），
+  // 否则只挪一层，上面的牌堆会散开。
+  function coverClosure(roots) {
+    var out = [];
+    var seen = {};
+    var i, j;
+
+    for (i = 0; i < roots.length; i++) {
+      if (!seen[roots[i]]) { seen[roots[i]] = 1; out.push(roots[i]); }
+    }
+
+    // 反复扫到不再新增为止。棋子总量几百，这点开销可忽略，
+    // 而且只在拖拽开始时算一次。
+    var changed = true;
+    while (changed) {
+      changed = false;
+      var list = ordered();
+      for (i = 0; i < list.length; i++) {
+        var top = list[i];
+        if (seen[top.id]) continue;
+        for (j = 0; j < out.length; j++) {
+          var below = pieces.get(out[j]);
+          if (below && covers(top, below)) {
+            seen[top.id] = 1;
+            out.push(top.id);
+            changed = true;
+            break;
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  function onDragStart(hit, wx, wy) {
+    if (!hit) return;
+    if (hit.lk && !selection.has(hit.id)) return;   // 冻结的拖不动
+
+    // 起点处压着哪些棋子（含被覆盖的）。
+    //
+    // 关键：如果其中**任意一枚已经被选中**，就沿用当前选择，
+    // 不要替换成最上面那枚。否则「渗选」选好底层棋子后一拖，
+    // 选择立刻被最上面那枚顶掉，需求二等于白做。
+    var under = pickAll(wx, wy);
+    var keepSel = false;
+    for (var i = 0; i < under.length; i++) {
+      if (selection.has(under[i].id)) { keepSel = true; break; }
+    }
+
+    if (!keepSel) {
+      if (hit.lk) return;
+      selectOnly(hit);
+    }
+
+    // 把压在选中棋子上的也拉进来（需求二）
+    var closure = coverClosure(Array.from(selection));
+
+    // 冻结的棋子**完全不参与拖动**（视作钉在桌上）：
+    // 它们既不该跟着动，也不该进批量。
+    // 如果只在最后一步把它们剔出批量、却仍让 onDragMove 改它们的坐标，
+    // 屏幕上它们会跟着走、但服务端从不确认 —— 看起来就是「拖完弹回去」。
+    dragging = closure.filter(function (id) {
+      var q = pieces.get(id);
+      return q && !q.lk;
+    });
+    if (!dragging.length) return;
+
     dragStart = {};
-    for (var i = 0; i < dragging.length; i++) {
-      var p = pieces.get(dragging[i]);
+    for (var j = 0; j < dragging.length; j++) {
+      var p = pieces.get(dragging[j]);
       if (p) dragStart[p.id] = { x: p.x, y: p.y };
     }
     dragMoved = false;
@@ -322,12 +540,13 @@
     if (!dragMoved) { dragStart = null; return; }
     dragMoved = false;
 
-    // 乐观分配 z（立刻压到最上层），服务端回显会覆盖成权威值
+    // 冻结的不进批量。服务端对含冻结项的批量是**整批拒绝**，
+    // 所以必须在这里先剔掉，否则一次拖拽会因为夹了一枚冻结棋子而全废。
     var list = [];
     for (var i = 0; i < ids.length; i++) {
       var p = pieces.get(ids[i]);
-      if (!p) continue;
-      p.z = ++zMax;
+      if (!p || p.lk) continue;
+      p.z = ++zMax;                        // 乐观置顶，服务端回显会覆盖
       list.push({ id: p.id, x: p.x, y: p.y });
     }
     dragStart = null;
@@ -337,11 +556,11 @@
     if (list.length) sendOp({ k: 'move', list: list });
   }
 
+  // 桌面右键 = 弹菜单（不再是「右键翻面」那种隐式操作）
   function onContext(e) {
-    var p = e.hit;
-    if (!p) return;
-    if (e.shiftKey) commit({ k: 'rot', id: p.id, r: ((p.r || 0) + 90) % 360 });
-    else commit({ k: 'flip', id: p.id, f: p.f ? 0 : 1 });
+    if (!e.hit) return;
+    if (!selection.has(e.hit.id)) selectOnly(e.hit);
+    openMenu(e.hit, { x: e.clientX, y: e.clientY });
   }
 
   /* ---------- HUD ---------- */
@@ -447,6 +666,13 @@
       list.forEach(function (p) {
         if (typeof p.z !== 'number') p.z = 0;
         if (p.z > zMax) zMax = p.z;
+        // 服务端存的是 TTS 原始坐标，内存里统一用显示坐标。
+        // 映射是符号翻转，自逆，所以这里直接乘即可。
+        var w = mapPt(p.x, p.y);
+        p.x = w.x; p.y = w.y;
+        if (!Array.isArray(p.st) || p.st.length < 2) p.st = null;
+        p.lk = p.lk ? 1 : 0;
+        p.si = p.si | 0;
         pieces.set(p.id, p);
       });
 
@@ -551,6 +777,99 @@
     else if (e.key === 'r') commit({ k: 'rot', id: one.id, r: ((one.r || 0) + 90) % 360 });
   });
 
+  /* ---------- 右键菜单（桌面右键 / 手机长按） ---------- */
+
+  var menu = global.Menu.create({
+    el: document.getElementById('menu'),
+    onPick: function (action, piece) { doAction(action, piece); }
+  });
+
+  // 对当前选择整体执行的辅助：单选就是长度 1 的批量
+  function eachSelected(fn) {
+    selectedPieces().forEach(function (p) { fn(p); });
+  }
+
+  function openMenu(piece, at) {
+    var sel = selectedPieces();
+    var n = sel.length;
+    var many = n > 1;
+    var suffix = many ? '（' + n + ' 枚）' : '';
+
+    // 「切换形态」只在所有选中项都真的有多形态时可用
+    var statesOk = sel.length > 0 && sel.every(function (p) {
+      return p.st && p.st.length > 1;
+    });
+    var nextState = 0;
+    if (statesOk) {
+      // 取第一枚的下一形态作为预览名
+      nextState = ((sel[0].si | 0) + 1) % sel[0].st.length;
+    }
+
+    var allLocked = sel.length > 0 && sel.every(function (p) { return p.lk; });
+
+    menu.show(piece, [
+      { action: 'flip', label: '翻面' + suffix },
+      { action: 'rot', label: '旋转 90°' + suffix },
+      statesOk
+        ? { action: 'state', label: '切换形态' + suffix,
+            note: ' → ' + (nextState + 1) + '/' + sel[0].st.length }
+        : { action: 'state', label: '切换形态', disabled: true,
+            note: sel.length ? ' 该棋子只有一种形态' : '' },
+      { sep: true },
+      { action: 'lock', label: allLocked ? ('解冻' + suffix) : ('固定（冻结）' + suffix) },
+      { action: 'clone', label: '克隆' + suffix },
+      { action: 'del', label: '删除' + suffix, danger: true }
+    ], at);
+  }
+
+  function doAction(action, piece) {
+    var sel = selectedPieces();
+    if (!sel.length) return;
+
+    switch (action) {
+      case 'flip':
+        sel.forEach(function (p) {
+          if (!p.lk) commit({ k: 'flip', id: p.id, f: p.f ? 0 : 1 });
+        });
+        break;
+
+      case 'rot':
+        sel.forEach(function (p) {
+          if (!p.lk) commit({ k: 'rot', id: p.id, r: ((p.r || 0) + 90) % 360 });
+        });
+        break;
+
+      case 'state':
+        sel.forEach(function (p) {
+          if (p.lk || !p.st || p.st.length < 2) return;
+          var next = ((p.si | 0) + 1) % p.st.length;
+          commit({ k: 'state', id: p.id, si: next });
+        });
+        break;
+
+      case 'lock': {
+        // 只要还有一枚没冻，这一下就是「全冻」；全冻了才变「全解冻」
+        var allLocked = sel.every(function (p) { return p.lk; });
+        sel.forEach(function (p) {
+          commit({ k: 'lock', id: p.id, lk: allLocked ? 0 : 1 });
+        });
+        break;
+      }
+
+      case 'clone':
+        // 克隆只对第一枚生效（多选克隆会一次冒出一堆，容易失控）；
+        // 偏移交给服务端，客户端把显示坐标换回原始坐标后下发
+        commit({ k: 'clone', id: sel[0].id, x: sel[0].x + 24, y: sel[0].y + 24 });
+        break;
+
+      case 'del':
+        // 删除要二次确认：这是唯一不可逆的操作
+        if (!global.confirm('删除选中的 ' + sel.length + ' 枚棋子？此操作不可撤销。')) return;
+        sel.forEach(function (p) { commit({ k: 'del', id: p.id }); });
+        break;
+    }
+  }
+
   /* ---------- 设置：LOD 档位 ---------- */
 
   var elSettings = document.getElementById('settings');
@@ -564,6 +883,8 @@
   var settings = global.Settings.create({
     el: document.getElementById('lod-levels'),
     elNote: document.getElementById('lod-note'),
+    elMap: document.getElementById('map-modes'),
+    elMapNote: document.getElementById('map-note'),
     initial: 'mid',
     apply: function (threshold) {
       lodThreshold = threshold;
@@ -574,10 +895,37 @@
       // 预算还卡在 72MB 就会持续抖动（比开着 LOD 更糟）。见 settings.js 注释。
       tex.setBudget(mb, boards);
     },
-    onChange: function (lv) {
-      fitPieces();          // 档位变了，按新预算重排一次视图
+    onChange: function () {
+      board.requestDraw();
+    },
+    // 位置映射一变：内存里存的是显示坐标，得整体重算。
+    // 因为映射是自逆的，先把旧映射换回原始坐标，再套新映射即可。
+    onMap: function (sx, sy) {
+      var oldX = mapSX, oldY = mapSY;
+      mapSX = sx; mapSY = sy;
+      if (oldX === sx && oldY === sy) return;
+
+      pieces.forEach(function (p) {
+        // 旧显示 -> 原始 -> 新显示（自逆，所以两次都用 mapPt 的同一逻辑）
+        var rx = p.x * oldX, ry = p.y * oldY;
+        p.x = rx * sx; p.y = ry * sy;
+      });
+      orderDirty = true;
+      board.requestDraw();
+      fitPieces();
     }
   });
+
+  /* ---------- 框选开关 ---------- */
+
+  var elMarqueeBtn = document.getElementById('btn-marquee');
+  elMarqueeBtn.addEventListener('click', function () {
+    var on = !board.isMarquee();
+    board.setMarquee(on);
+    elMarqueeBtn.className = on ? 'on' : '';
+    elMarqueeBtn.textContent = on ? '框选中' : '框选';
+  });
+  // 桌面端按住 Shift 也能框选，与绘图软件习惯一致（见 board.js）
 
   /* ---------- 启动 ---------- */
 
@@ -597,6 +945,8 @@
     bounds: bounds,
     ordered: ordered,
     pick: pick,
+    pickAll: pickAll,
+    coverClosure: coverClosure,
     lod: function () { return lodThreshold; }
   };
 })(window);

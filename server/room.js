@@ -30,6 +30,7 @@ const path = require('path');
 
 const SAVE_DEBOUNCE_MS = 5000;
 const MAX_BATCH = 2048;          // 单次批量移动上限，防畸形包
+const CLONE_OFFSET = 24;         // 克隆体的默认偏移（世界单位）
 
 class Room {
   constructor(id, opts) {
@@ -38,6 +39,7 @@ class Room {
 
     this.seq = 0;
     this.zSeq = 0;
+    this.cloneSeq = 0;         // 克隆 id 分配器
     this.clients = new Set();
     this.pieces = new Map();
     this.scene = '';             // 当前场景 slug
@@ -65,6 +67,7 @@ class Room {
     this.pieces.clear();
     this.seq = 0;
     this.zSeq = 0;
+    this.cloneSeq = 0;
 
     for (const p of pieces) {
       const q = {
@@ -77,7 +80,10 @@ class Room {
         h: p.h,
         img: p.img,
         bimg: p.bimg || p.img,
-        z: typeof p.z === 'number' ? p.z : 0
+        z: typeof p.z === 'number' ? p.z : 0,
+        lk: p.lk ? 1 : 0,          // 冻结：不可拖动/翻面/旋转
+        si: p.si | 0,              // 当前形态索引（st 的下标）
+        st: Array.isArray(p.st) && p.st.length ? p.st : null
       };
       this.pieces.set(q.id, q);
       if (q.z > this.zSeq) this.zSeq = q.z;
@@ -99,18 +105,14 @@ class Room {
     if (!use) return 0;                    // 没跑过资产管线，空房间
 
     const scene = store.load(use);
-    return this.loadPieces(scene.pieces.map((p) => ({
-      id: p.id,
-      x: p.x,
-      y: p.y,
-      r: p.r,
-      f: p.f,
-      w: p.w,
-      h: p.h,
-      img: p.img,
-      bimg: p.bimg,
-      z: p.z
-    })), { scene: use, label: store.label(use) || scene.name });
+    // 直接展开场景棋子，不要在这里手写字段白名单 ——
+    // 手挑字段会静默丢掉后加的字段（st 形态、lk 冻结就是这么丢的：
+    // loadPieces 认得它们，但这里没传进去，表现是「形态切换全部失败」
+    // 却不报任何错）。需要过滤就在 loadPieces 里统一做。
+    return this.loadPieces(scene.pieces, {
+      scene: use,
+      label: store.label(use) || scene.name
+    });
   }
 
   /* ---------- 持久化 ---------- */
@@ -138,6 +140,7 @@ class Room {
         if (p.z > maxZ) maxZ = p.z;
       });
       this.zSeq = maxZ;
+      this.cloneSeq = d.cloneSeq | 0;
       return true;
     } catch (_) {
       return false;
@@ -147,6 +150,7 @@ class Room {
   snapshot() {
     return {
       seq: this.seq,
+      cloneSeq: this.cloneSeq,
       scene: this.scene,
       label: this.label,
       pieces: Array.from(this.pieces.values())
@@ -214,6 +218,10 @@ class Room {
           if (!it || typeof it !== 'object') return null;
           const p = this.pieces.get(it.id);
           if (!p) return null;
+          // 冻结的棋子不可移动。在服务端拦，而不是只靠前端不拖 ——
+          // 前端只是「不去拖」，服务端才是权威；跳过它会让整批
+          // 悄悄少动一枚，不如显式拒绝让客户端知道自己过时了。
+          if (p.lk) return null;
           if (!Room._finite(it.x) || !Room._finite(it.y)) return null;
           clean.push({ id: it.id, x: it.x, y: it.y });
         }
@@ -235,7 +243,7 @@ class Room {
 
       case 'flip': {
         const p = this.pieces.get(op.id);
-        if (!p) return null;
+        if (!p || p.lk) return null;
         p.f = op.f ? 1 : 0;
         this.seq++;
         this.save();
@@ -244,11 +252,82 @@ class Room {
 
       case 'rot': {
         const p = this.pieces.get(op.id);
-        if (!p) return null;
+        if (!p || p.lk) return null;
         p.r = (((Number(op.r) | 0) % 360) + 360) % 360;
         this.seq++;
         this.save();
         return { k: 'rot', id: p.id, r: p.r, z: p.z };
+      }
+
+      // 冻结 / 解冻。注意这是**唯一允许作用于已冻结棋子的 op** ——
+      // 否则一旦冻上就再也解不开了。
+      case 'lock': {
+        const p = this.pieces.get(op.id);
+        if (!p) return null;
+        p.lk = op.lk ? 1 : 0;
+        p.z = ++this.zSeq;
+        this.seq++;
+        this.save();
+        return { k: 'lock', id: p.id, lk: p.lk, z: p.z };
+      }
+
+      // 切换形态。st 是形态数组（st[0] = 存档里的原始形态），
+      // si 是当前形态下标；宽高随形态变（不同形态尺寸可能不同）。
+      case 'state': {
+        const p = this.pieces.get(op.id);
+        if (!p || p.lk) return null;
+        if (!p.st || p.st.length < 2) return null;
+        const si = op.si | 0;
+        if (si < 0 || si >= p.st.length) return null;
+        p.si = si;
+        p.img = p.st[si].img;
+        p.bimg = p.st[si].bimg || p.st[si].img;
+        p.w = p.st[si].w;
+        p.h = p.st[si].h;
+        p.z = ++this.zSeq;
+        this.seq++;
+        this.save();
+        return {
+          k: 'state', id: p.id, si: p.si,
+          img: p.img, bimg: p.bimg, w: p.w, h: p.h, z: p.z
+        };
+      }
+
+      // 克隆：复制一枚棋子，原样搬到偏移位置，压在最上层并立即选中。
+      // 新 id 由服务端分配（客户端各发各的会撞 id）。
+      case 'clone': {
+        const src = this.pieces.get(op.id);
+        if (!src) return null;
+
+        const id = 'c' + (++this.cloneSeq) + '_' + src.id;
+        if (this.pieces.has(id)) return null;
+
+        const p = {
+          id,
+          x: Room._finite(op.x) ? op.x : src.x + CLONE_OFFSET,
+          y: Room._finite(op.y) ? op.y : src.y + CLONE_OFFSET,
+          r: src.r, f: src.f,
+          w: src.w, h: src.h,
+          img: src.img, bimg: src.bimg,
+          z: ++this.zSeq,
+          lk: 0,                      // 克隆出来的是解冻的
+          si: src.si | 0,
+          st: src.st ? src.st.map((s) => ({ img: s.img, bimg: s.bimg, w: s.w, h: s.h })) : null
+        };
+        this.pieces.set(id, p);
+
+        this.seq++;
+        this.save();
+        return { k: 'clone', piece: p, from: src.id };
+      }
+
+      case 'del': {
+        const p = this.pieces.get(op.id);
+        if (!p) return null;
+        this.pieces.delete(op.id);
+        this.seq++;
+        this.save();
+        return { k: 'del', id: op.id };
       }
 
       default:
@@ -277,4 +356,4 @@ class RoomStore {
   }
 }
 
-module.exports = { Room, RoomStore, SAVE_DEBOUNCE_MS, MAX_BATCH };
+module.exports = { Room, RoomStore, SAVE_DEBOUNCE_MS, MAX_BATCH, CLONE_OFFSET };

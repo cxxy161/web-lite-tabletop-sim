@@ -37,6 +37,7 @@
   <div id="tools">
     <button id="btn-all" type="button">全选</button>
     <button id="btn-none" type="button">取消</button>
+    <button id="btn-marquee" type="button">框选</button>
     <button id="btn-flipall" type="button">翻面</button>
     <button id="btn-origin" type="button">原点</button>
     <button id="btn-fit" type="button">适配</button>
@@ -47,13 +48,22 @@
 
   <div id="settings" hidden>
     <div class="set-row">
-      <span class="set-label">画质 / LOD</span>
+      <span class="set-label">画质</span>
       <div id="lod-levels" class="set-seg"></div>
     </div>
     <div id="lod-note" class="set-note"></div>
+
+    <div class="set-row">
+      <span class="set-label">盘面方向</span>
+      <div id="map-modes" class="set-seg"></div>
+    </div>
+    <div id="map-note" class="set-note"></div>
   </div>
 
 </div>
+
+<!-- 棋子菜单（桌面右键 / 手机长按） -->
+<div id="menu" hidden></div>
 
 <div id="fatal" hidden></div>
 
@@ -79,6 +89,7 @@
 <script src="texture.js"></script>
 <script src="net.js"></script>
 <script src="settings.js"></script>
+<script src="menu.js"></script>
 <script src="saves.js"></script>
 <script src="app.js"></script>
 </body>

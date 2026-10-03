@@ -41,10 +41,35 @@
   ];
 
   var KEY = 'webtts.lod';
+  var KEY_MAP = 'webtts.map';
+
+  // 位置映射候选。TTS 存档给出的是 (posX, posZ)，映射到 2D 画布
+  // 有 4 种可能的轴符号组合。**这四种在纯数学推不唯一**（透视缩略图
+  // 信噪比太低，我算出来最好的一组相关性只有 0.08），所以做成可切换，
+  // 由用户在真实画面上直接看哪个对。
+  //
+  //   id      x 轴    y 轴   说明
+  //   pp      +posX   +posZ
+  //   pn      +posX   -posZ
+  //   np      -posX   +posZ
+  //   nn      -posX   -posZ   （= 绕场景中心 180°）
+  var MAPS = [
+    { id: 'pp', name: 'x+ y+', sx: 1,  sy: 1 },
+    { id: 'pn', name: 'x+ y-', sx: 1,  sy: -1 },
+    { id: 'np', name: 'x- y+', sx: -1, sy: 1 },
+    { id: 'nn', name: 'x- y-', sx: -1, sy: -1 }
+  ];
 
   function byId(id) {
     for (var i = 0; i < LEVELS.length; i++) {
       if (LEVELS[i].id === id) return LEVELS[i];
+    }
+    return null;
+  }
+
+  function mapById(id) {
+    for (var i = 0; i < MAPS.length; i++) {
+      if (MAPS[i].id === id) return MAPS[i];
     }
     return null;
   }
@@ -108,13 +133,62 @@
     build();
     applyLevel(current, true);   // silent：初始化时不触发 onChange
 
+    /* ---------- 位置映射 ---------- */
+
+    var elMap = opts.elMap;
+    var elMapNote = opts.elMapNote;
+    var onMap = opts.onMap;
+    var curMap = mapById(opts.initialMap) || mapById('pp');
+
+    function applyMap(m, silent) {
+      curMap = m;
+      try { global.localStorage.setItem(KEY_MAP, m.id); } catch (_) {}
+      if (elMap) {
+        var bs = elMap.querySelectorAll('button');
+        for (var i = 0; i < bs.length; i++) {
+          bs[i].className = (bs[i].dataset.map === m.id) ? 'on' : '';
+        }
+      }
+      if (elMapNote) {
+        elMapNote.textContent = m.id === 'pp'
+          ? 'TTS 原始符号。若整幅场景反了，依次试右边三个'
+          : 'x' + (m.sx > 0 ? '+' : '−') + '  y' + (m.sy > 0 ? '+' : '−');
+      }
+      if (onMap) onMap(m.sx, m.sy);
+    }
+
+    function buildMap() {
+      if (!elMap) return;
+      elMap.innerHTML = '';
+      MAPS.forEach(function (m) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = m.name;
+        b.dataset.map = m.id;
+        b.addEventListener('click', function () { applyMap(m); });
+        elMap.appendChild(b);
+      });
+    }
+
+    try {
+      var mv = global.localStorage.getItem(KEY_MAP);
+      var mm = mv && mapById(mv);
+      if (mm) curMap = mm;
+    } catch (_) {}
+
+    buildMap();
+    applyMap(curMap, true);
+
     return {
       levels: LEVELS,
+      maps: MAPS,
       current: function () { return current; },
       set: function (id) { var l = byId(id); if (l) applyLevel(l); },
-      threshold: function () { return current.threshold; }
+      threshold: function () { return current.threshold; },
+      setMap: function (id) { var m = mapById(id); if (m) applyMap(m); },
+      map: function () { return curMap; }
     };
   }
 
-  global.Settings = { create: create, LEVELS: LEVELS, KEY: KEY };
+  global.Settings = { create: create, LEVELS: LEVELS, MAPS: MAPS, KEY: KEY, KEY_MAP: KEY_MAP };
 })(window);
