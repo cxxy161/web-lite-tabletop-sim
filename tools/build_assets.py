@@ -10,13 +10,25 @@ build_assets.py —— TTS《大洋落日》资产 → Web 资产管线
 坐标映射（见 TTS 官方坐标系：X 右、Y 上、Z 朝观察者）
   our.x = posX * WORLD
   our.y = posZ * WORLD
-  our.r = -rotY          （推导见下）
+  our.r = 180 - rotY     （推导见下）
   our.f = 1 if |rotZ| ≈ 180 else 0   （平面棋子在 XZ 平面内被翻转 = 背面朝上）
 
-关于 r = -rotY 的推导：
-  TTS 绕 Y 轴旋转 θ 时： sx' = sx·cosθ + sy·sinθ ; sy' = -sx·sinθ + sy·cosθ
-  canvas rotate(φ) 为：  sx' = sx·cosφ - sy·sinφ ; sy' = sx·sinφ + sy·cosφ
-  两式对比得 φ = -θ。所以取负号。
+关于 r = 180 - rotY 的推导（**这里踩过坑，别凭感觉改**）：
+  1) 先定位置：TTS 俯视相机的 screen-right = +X、screen-up = -Z，
+     而 canvas 的 y 向下，所以 canvas_y = +posZ（即 our.y 不取负）。
+  2) 再定旋转。设贴图影像的「顶端」在 TTS 局部坐标里指向 +Z
+     （这个 V 轴约定是由证据反推的，见第 3 点）。
+     经绕 +Y 旋转 θ 后，影像顶端的世界方向 = (sinθ, 0, cosθ)，
+     映射到 canvas 就是 (sinθ, cosθ)。
+  3) canvas 的 rotate(φ) 会把初始顶端 (0,-1) 变成 (sinφ, -cosφ)。
+     令两者相等：sinφ = sinθ 且 cosφ = -cosθ  =>  φ = 180° - θ。
+
+  验证：本模组 762 枚棋子的 rotY 都是 180（±0.5），
+  代入得 r = 0，即**原图直接正着画**。
+  这一条可以用存档自带的缩略图目视确认：把大板块原图取出来看，
+  文字「大洋落日」「中途岛战役地图」在 rotY=180 的素材里
+  本来就是正立的 —— 早期写成 r = -rotY 又转了 180°，
+  导致整个盘面的文字倒过来（用户报的「上下颠倒」就是这个）。
 
 尺寸：TTS 棋子的基础边长是 2.0 单位（与存档里 Grid.xSize = 2.0 吻合），
   实测相邻棋子中位间距 1.29、常见 scale 0.6 → 1.29 / 0.6 ≈ 2.15 ≈ 2.0，交叉验证成立。
@@ -196,7 +208,18 @@ def build_images(z, ok, missing, limit=None):
 # ---------------------------------------------------------------- 场景转换
 
 def norm360(v):
-    return (v % 360.0 + 360.0) % 360.0
+    """归一化角度到 [0, 360)。
+
+    % 的语义本身没问题（(-180) % 360 == 180），坑在**浮点**上：
+    359.996 这类「差一点到 360」的值会在后面 round(x, 2) 时进位成 360.0，
+    于是 r 出现 360 这个越界值 —— 任何假设 r ∈ [0,360) 的代码都会出错。
+    所以在源头就把贴近 360 的噪声折回 0。
+    """
+    r = v % 360.0
+    # 0.05 度 ≈ 屏幕上完全看不出的偏差，却足以避免 359.996 -> 360.0
+    if r < 0.05 or r > 359.95:
+        r = 0.0
+    return r
 
 
 def is_face_down(t):
@@ -242,7 +265,10 @@ def convert_save(save, index):
             'id': 't%03d' % i,
             'x': round(t.get('posX', 0.0) * WORLD, 3),
             'y': round(t.get('posZ', 0.0) * WORLD, 3),
-            'r': round(norm360(-t.get('rotY', 0.0)), 2),   # 负号见文件头推导
+            # 180 - rotY，不是 -rotY。推导见文件头 —— 写成 -rotY 会让
+            # 整个盘面的文字倒过来（rotY=180 时 -180 与 +180 同余，
+            # 于是又转了一次 180°）。
+            'r': round(norm360(180.0 - t.get('rotY', 0.0)), 2),
             'f': 1 if is_face_down(t) else 0,
             'w': round(w, 2),
             'h': round(h, 2),

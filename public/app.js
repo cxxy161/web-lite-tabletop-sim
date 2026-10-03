@@ -64,6 +64,7 @@
   var elHudSel = document.getElementById('hud-sel');
   var elHudScene = document.getElementById('hud-scene');
   var elTex = document.getElementById('hud-tex');
+  var elFatal = document.getElementById('fatal');
 
   elHudRoom.textContent = ROOM;
 
@@ -368,6 +369,19 @@
     elTex.textContent = '贴图 ' + s.ready + '/' + s.cached + (s.pending ? ' +' + s.pending : '');
   }
 
+  // 致命错误提示：格式不匹配这类问题必须让人一眼看到，
+  // 而不是留一张空白画布让人猜。
+  function showFatal(text) {
+    if (elFatal) {
+      elFatal.hidden = false;
+      elFatal.textContent = text;
+    }
+    if (elHudConn) {
+      elHudConn.textContent = '格式不匹配';
+      elHudConn.className = 'off';
+    }
+  }
+
   setInterval(syncTex, 600);   // 贴图统计不进绘制循环，免得每帧都在刷 DOM
 
   function bounds() {
@@ -409,13 +423,29 @@
     onInit: function (m) {
       seq = m.seq | 0;
 
+      // 先校验格式再装载。
+      //
+      // 曾经踩过的坑：浏览器加载的是新前端，而服务的却是一个还在
+      // 跑旧代码的进程（同一台机上多开/残留），init 里是没有 w/h/img 的
+      // 老格式棋子。结果 p.w === undefined -> NaN，一枚都画不出来，
+      // 而且**没有任何报错**，只看到空白画布和 NaN 坐标。
+      //
+      // 静默失败最难查，所以这里宁可显式拒绝并说清原因。
+      var list = m.pieces || [];
+      if (list.length && typeof list[0].w !== 'number') {
+        showFatal('服务端返回的棋子格式与本页前端不匹配（缺少 w/h/img 字段）。'
+                + '通常是这台机器上还跑着一个旧版服务进程 —— 请确认访问的端口'
+                + '是当前启动的那个，并停掉残留的旧进程后刷新。');
+        return;
+      }
+
       pieces.clear();
       selection.clear();
       dragging = null;
       dragStart = null;
       zMax = 0;
 
-      (m.pieces || []).forEach(function (p) {
+      list.forEach(function (p) {
         if (typeof p.z !== 'number') p.z = 0;
         if (p.z > zMax) zMax = p.z;
         pieces.set(p.id, p);
