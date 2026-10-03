@@ -82,7 +82,9 @@ function encode(pieces, meta) {
   const rows = [];
   const ids = [];
   const states = {};             // 稀疏：只有多形态的棋子才落这里
+  const texts = {};              // 稀疏：只有文字框才落这里（字符串列不进数字行）
   let hasStates = false;
+  let hasTexts = false;
   let idsRegular = true;
 
   for (let i = 0; i < pieces.length; i++) {
@@ -107,6 +109,14 @@ function encode(pieces, meta) {
       hasStates = true;
     }
 
+    // 文字是**字符串**，行是纯数字列式数组，塞不进去。
+    // 单独开一张稀疏表按下标存：全场通常只有几块文字牌，
+    // 为它们给 778 行每行都加一个 "" 是纯浪费。
+    if (typeof p.tx === 'string' && p.tx) {
+      texts[i] = p.tx.slice(0, 200);
+      hasTexts = true;
+    }
+
     // 绝大多数场景的 id 就是 t000/t001…，能按下标还原，不必写进存档。
     // 只有不规整时才落 ids 表，省掉几 KB。
     const expect = 't' + String(i).padStart(3, '0');
@@ -123,6 +133,7 @@ function encode(pieces, meta) {
   };
   if (!idsRegular) out.ids = ids;
   if (hasStates) out.st = states;
+  if (hasTexts) out.tx = texts;
   return out;
 }
 
@@ -145,6 +156,7 @@ function decode(obj) {
   const seen = new Set();
   const ids = Array.isArray(obj.ids) ? obj.ids : null;
   const stMap = (obj.st && typeof obj.st === 'object') ? obj.st : null;
+  const txMap = (obj.tx && typeof obj.tx === 'object') ? obj.tx : null;
 
   function resolveTex(idx, where) {
     if (idx < 0) return null;
@@ -245,8 +257,9 @@ function decode(obj) {
       st,
       ds: [2, 4, 6, 10, 12].indexOf(ds) >= 0 ? ds : 0,
       v: dv,
-      sh: [1, 2, 3, 4].indexOf(sh) >= 0 ? sh : 0,
-      c: cl
+      sh: [1, 2, 3, 4, 5].indexOf(sh) >= 0 ? sh : 0,
+      c: cl,
+      tx: (txMap && typeof txMap[i] === 'string') ? txMap[i].slice(0, 200) : ''
     });
   }
 

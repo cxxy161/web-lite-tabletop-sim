@@ -38,8 +38,12 @@ const DICE_SIDES = [2, 4, 6, 10, 12];
 const DICE_SIZE = { 2: 44, 4: 46, 6: 48, 10: 52, 12: 56 };
 
 // 标记：形状白名单 + 世界边长。和骰子一样，只是为了观感有区分。
-const TOKEN_SHAPES = [1, 2, 3, 4];     // 方 / 圆 / 三角 / 星
+const TOKEN_SHAPES = [1, 2, 3, 4, 5];  // 方 / 圆 / 三角 / 星 / 文字框
 const TOKEN_SIZE = 40;
+const TEXT_SIZE = { w: 120, h: 44 };   // 文字框默认是一块横向的牌子
+const TEXT_MAX = 200;                  // 文字长度上限
+const ITEM_MIN = 8;                    // 物品最小边长（再小就点不到了）
+const ITEM_MAX = 1600;                 // 最大边长，防止拖出一个盖住全场的怪物
 
 class Room {
   constructor(id, opts) {
@@ -98,7 +102,8 @@ class Room {
         ds: DICE_SIDES.indexOf(p.ds | 0) >= 0 ? (p.ds | 0) : 0,   // 面数，0=非骰子
         v: p.v | 0,                // 当前点数
         sh: TOKEN_SHAPES.indexOf(p.sh | 0) >= 0 ? (p.sh | 0) : 0, // 标记形状，0=非标记
-        c: p.c >>> 0               // 自定义颜色（0xRRGGBB，0=默认）
+        c: p.c >>> 0,              // 自定义颜色（0xRRGGBB，0=默认）
+        tx: typeof p.tx === 'string' ? p.tx.slice(0, TEXT_MAX) : ''   // 文字框内容
       };
       this.pieces.set(q.id, q);
       if (q.z > this.zSeq) this.zSeq = q.z;
@@ -387,7 +392,8 @@ class Room {
           ds: src.ds | 0,
           v: src.v | 0,
           sh: src.sh | 0,
-          c: src.c >>> 0
+          c: src.c >>> 0,
+          tx: src.tx || ''
         };
         this.pieces.set(id, p);
 
@@ -447,20 +453,29 @@ class Room {
         const id = 'k' + (++this.tokenSeq) + '_' + shape;
         if (this.pieces.has(id)) return null;
 
-        const sz = Room._finite(op.size) ? Math.max(8, Math.min(400, op.size)) : TOKEN_SIZE;
+        const isText = shape === 5;
+        const defW = isText ? TEXT_SIZE.w : TOKEN_SIZE;
+        const defH = isText ? TEXT_SIZE.h : TOKEN_SIZE;
+        const sz = Room._finite(op.size)
+          ? Math.max(ITEM_MIN, Math.min(ITEM_MAX, op.size)) : null;
         const p = {
           id,
           x: op.x, y: op.y,
           r: Room._finite(op.r) ? Room._normR(op.r) : 0,
           f: 0,
-          w: sz, h: sz,
+          w: sz != null ? sz : (Room._finite(op.w) ? op.w : defW),
+          h: sz != null ? sz : (Room._finite(op.h) ? op.h : defH),
           img: 'white', bimg: 'white',   // 标记是画出来的
           z: ++this.zSeq,
           lk: 0, si: 0, st: null,
           ds: 0, v: 0,
           sh: shape,
-          c: Room._color(op.c)
+          c: Room._color(op.c),
+          tx: isText ? String(op.tx == null ? '' : op.tx).slice(0, TEXT_MAX) : ''
         };
+        // 宽高也夹一遍（op.w/op.h 来自客户端，不能信）
+        p.w = Math.max(ITEM_MIN, Math.min(ITEM_MAX, p.w));
+        p.h = Math.max(ITEM_MIN, Math.min(ITEM_MAX, p.h));
         this.pieces.set(id, p);
 
         this.seq++;
@@ -468,24 +483,58 @@ class Room {
         return { k: 'token', piece: p };
       }
 
-      // 改颜色 / 改形状。骰子与标记都用它，方块和骰子都能换色。
-      case 'tint': {
+      // 编辑物品属性：颜色 / 形状 / 大小 / 文字。
+      //
+      // 原来叫 tint（只改色），后来形状、大小、文字都归它管，
+      // 名字已经误导，所以改名 edit。只对骰子/标记有效 ——
+      // 普通棋子的尺寸来自 TTS 资产的 scale，不该在这里被改。
+      case 'edit': {
         const p = this.pieces.get(op.id);
         if (!p || p.lk) return null;
-        if (!p.ds && !p.sh) return null;         // 只对骰子/标记有效
+        if (!p.ds && !p.sh) return null;
 
         let changed = false;
+
         if (op.c != null) { p.c = Room._color(op.c); changed = true; }
+
         if (op.sh != null && p.sh) {
           const ns = TOKEN_SHAPES.indexOf(op.sh | 0) >= 0 ? (op.sh | 0) : 0;
-          if (ns) { p.sh = ns; changed = true; }
+          if (ns && ns !== p.sh) {
+            p.sh = ns;
+            // 换成文字框 / 从文字框换走时，宽高比例跟着调，
+            // 否则会得到一块又长又扁的方形，或者一个放不下字的方块。
+            if (ns === 5) { p.w = TEXT_SIZE.w; p.h = TEXT_SIZE.h; }
+            else if (p.sh !== 5) { p.h = p.w; }
+            else { p.h = p.w = TOKEN_SIZE; }
+            changed = true;
+          }
         }
+
+        // 大小：宽高各自夹到合法区间。允许非等比（文字框就是要扁的）。
+        let nw = p.w, nh = p.h;
+        if (Room._finite(op.w)) nw = Math.max(ITEM_MIN, Math.min(ITEM_MAX, op.w));
+        if (Room._finite(op.h)) nh = Math.max(ITEM_MIN, Math.min(ITEM_MAX, op.h));
+        // 只给了一个维度时，另一方按原比例跟随（普通标记是正方形）
+        if (Room._finite(op.w) && !Room._finite(op.h) && p.sh !== 5) nh = nw;
+        if (Room._finite(op.h) && !Room._finite(op.w) && p.sh !== 5) nw = nh;
+        if (nw !== p.w || nh !== p.h) { p.w = nw; p.h = nh; changed = true; }
+
+        // 文字：只对文字框有意义，其它形状忽略了也不报错
+        if (op.tx != null) {
+          const t = String(op.tx).slice(0, TEXT_MAX);
+          if (t !== (p.tx || '')) { p.tx = t; changed = true; }
+        }
+
         if (!changed) return null;
 
         p.z = ++this.zSeq;
         this.seq++;
         this.save();
-        return { k: 'tint', id: p.id, c: p.c, sh: p.sh, z: p.z };
+        return {
+          k: 'edit', id: p.id,
+          c: p.c, sh: p.sh, w: p.w, h: p.h, tx: p.tx || '',
+          z: p.z
+        };
       }
 
       // 掷骰。**点数由服务端随机** —— 若让客户端各摇各的，
@@ -541,5 +590,6 @@ class RoomStore {
 
 module.exports = {
   Room, RoomStore, SAVE_DEBOUNCE_MS, MAX_BATCH, CLONE_OFFSET,
-  DICE_SIDES, DICE_SIZE, TOKEN_SHAPES, TOKEN_SIZE
+  DICE_SIDES, DICE_SIZE, TOKEN_SHAPES, TOKEN_SIZE,
+  TEXT_SIZE, TEXT_MAX, ITEM_MIN, ITEM_MAX
 };

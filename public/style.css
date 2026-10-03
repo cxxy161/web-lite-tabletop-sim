@@ -24,7 +24,14 @@ html,body{
   overscroll-behavior:none;
 }
 
-canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+/* 只给两块主画布全屏定位。
+ *
+ * 原来这条规则写的是裸 `canvas{position:fixed;inset:0;width:100%;height:100%}`，
+ * 于是物品面板里那些 34x34 的图标 canvas 也被撑成全屏 fixed、
+ * 全部叠在 (0,0) —— 表现就是「一点开物品，一个巨大的图形沾满屏幕」。
+ * 选择器必须限定到 #bg/#fg，不能留给元素名。 */
+#bg,#fg{position:fixed;inset:0;width:100%;height:100%;display:block}
+canvas{display:block}
 #bg{pointer-events:none}
 /* 无限地图上默认手势就是平移，所以常态就是 grab */
 #fg{touch-action:none;cursor:grab}
@@ -212,13 +219,24 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
   box-shadow:0 0 0 2px rgba(194,112,63,.28);
 }
 
+/* 菜单里的文字输入 */
+.menu-input{
+  width:100%;box-sizing:border-box;
+  padding:5px 7px;
+  font:inherit;font-size:12px;
+  color:var(--fg);
+  background:#fbf9f4;
+  border:1px solid var(--line-2);
+  border-radius:5px;
+}
+.menu-input:focus{outline:none;border-color:var(--accent)}
+
 /* 拖拽时跟随指针的幽灵 */
 #ghost{
   position:fixed;z-index:8;
-  width:44px;height:44px;
+  width:64px;height:44px;
   pointer-events:none;
   opacity:.85;
-  filter:drop-shadow(0 3px 6px rgba(90,78,60,.30));
 }
 #ghost[hidden]{display:none}
 

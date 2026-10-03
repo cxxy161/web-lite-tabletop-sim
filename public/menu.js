@@ -16,6 +16,7 @@
   function create(opts) {
     var el = opts.el;
     var onPick = opts.onPick;       // function(action, piece, value)
+    var onPreview = opts.onPreview; // 滑杆拖动中的本地预览（不发 op）
     var open = false;
 
     function hide() {
@@ -129,6 +130,84 @@
 
         wrap.appendChild(row);
         el.appendChild(wrap);
+        return;
+      }
+
+      // ---- 大小滑杆 ----
+      if (it.size) {
+        var sw = document.createElement('div');
+        sw.className = 'menu-group';
+
+        var sh2 = document.createElement('div');
+        sh2.className = 'menu-label';
+        var sv = document.createElement('span');
+        sv.className = 'menu-val';
+        sv.textContent = Math.round(it.value) + 'px';
+        sh2.textContent = it.label + ' ';
+        sh2.appendChild(sv);
+        sw.appendChild(sh2);
+
+        var srow = document.createElement('div');
+        srow.className = 'menu-slider';
+        var srng = document.createElement('input');
+        srng.type = 'range';
+        srng.min = it.min; srng.max = it.max; srng.step = it.step || 1;
+        srng.value = it.value;
+        srng.addEventListener('input', function () {
+          sv.textContent = Math.round(srng.value) + 'px';
+          // 实时预览：直接改本地的 w/h，不发 op（松手才发）
+          if (opts.onPreview) opts.onPreview(piece, Number(srng.value));
+        });
+        srng.addEventListener('change', function () {
+          onPick(it.action, piece, Number(srng.value));
+        });
+        srow.appendChild(srng);
+        sw.appendChild(srow);
+        el.appendChild(sw);
+        return;
+      }
+
+      // ---- 文字输入（文字框标记用） ----
+      if (it.text) {
+        var tw = document.createElement('div');
+        tw.className = 'menu-group';
+
+        var tl = document.createElement('div');
+        tl.className = 'menu-label';
+        tl.textContent = it.label;
+        tw.appendChild(tl);
+
+        var inp = document.createElement('input');
+        inp.type = 'text';
+        inp.className = 'menu-input';
+        inp.value = it.value == null ? '' : it.value;
+        inp.maxLength = it.maxLength || 200;
+        inp.placeholder = it.placeholder || '';
+        // 允许换行输入：文字框是多行的
+        inp.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            hide();
+            onPick(it.action, piece, inp.value);
+          }
+          e.stopPropagation();     // 别让棋盘抢走退格/方向键
+        });
+        tw.appendChild(inp);
+
+        var row2 = document.createElement('div');
+        row2.className = 'menu-quick';
+        var ok = document.createElement('button');
+        ok.type = 'button';
+        ok.textContent = '应用';
+        ok.addEventListener('click', function (e) {
+          e.stopPropagation();
+          hide();
+          onPick(it.action, piece, inp.value);
+        });
+        row2.appendChild(ok);
+        tw.appendChild(row2);
+
+        el.appendChild(tw);
         return;
       }
 

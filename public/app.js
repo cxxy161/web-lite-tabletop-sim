@@ -219,9 +219,9 @@
           continue;
         }
 
-        // 标记同样是画出来的（方/圆/三角/星 + 自定义色）
+        // 标记同样是画出来的（方/圆/三角/星/文字框 + 自定义色）
         if (p.sh > 0) {
-          Token.draw(g, cx, cy, p.w, p.sh, p.c);
+          Token.draw(g, cx, cy, p.w, p.sh, p.c, p.tx, p.h);
           if (p.lk) strokeLock(g, cx - hw, cy - hh, p.w, p.h, s);
           if (selection.has(p.id) && showRing) strokeSel(g, cx - hw, cy - hh, p.w, p.h, s);
           continue;
@@ -370,6 +370,12 @@
       if (op.c) out.c = op.c;
       if (typeof op.size === 'number') out.size = op.size;
       if (typeof op.r === 'number') out.r = op.r;
+      // 文字框的**内容与初始尺寸**也必须转发。
+      // 漏掉时：本地看着有字，服务端存的是空串，一刷新（或别人打开）
+      // 就变成一块空牌子 —— 典型的「本机对、别人错」。
+      if (typeof op.w === 'number') out.w = op.w;
+      if (typeof op.h === 'number') out.h = op.h;
+      if (typeof op.tx === 'string') out.tx = op.tx;
       net.send({ t: 'op', op: out });
       return;
     }
@@ -473,9 +479,12 @@
     // 用 |0 取整会把它们静默抹平（服务端也是同样精度）。
     else if (op.k === 'rot') q.r = normR(op.r);
     else if (op.k === 'lock') q.lk = op.lk ? 1 : 0;
-    else if (op.k === 'tint') {
+    else if (op.k === 'edit') {
       if (typeof op.c === 'number') q.c = op.c >>> 0;
       if (op.sh) q.sh = op.sh | 0;
+      if (typeof op.w === 'number') q.w = op.w;
+      if (typeof op.h === 'number') q.h = op.h;
+      if (typeof op.tx === 'string') q.tx = op.tx;
     }
     else if (op.k === 'state') {
       q.si = op.si | 0;
@@ -634,6 +643,8 @@
   function onDragStart(hit, wx, wy) {
     if (!hit) return;
     if (hit.lk && !selection.has(hit.id)) return;   // 冻结的拖不动
+
+
 
     // 起点处压着哪些棋子（含被覆盖的）。
     //
@@ -843,6 +854,10 @@
         if (!Array.isArray(p.st) || p.st.length < 2) p.st = null;
         p.lk = p.lk ? 1 : 0;
         p.si = p.si | 0;
+        p.ds = p.ds | 0;
+        p.sh = p.sh | 0;
+        p.c = p.c >>> 0;
+        p.tx = typeof p.tx === 'string' ? p.tx : '';
         pieces.set(p.id, p);
       });
 
@@ -966,7 +981,20 @@
     // 第三个参数 value 必须转发 —— 单选列表传目标形态下标、
     // 滑杆传目标角度。漏掉它会让两者都变成 undefined：
     // si 变 0、r 变 0，看起来像「点了没反应」或「全转回 0°」。
-    onPick: function (action, piece, value) { doAction(action, piece, value); }
+    onPick: function (action, piece, value) { doAction(action, piece, value); },
+    // 滑杆拖动中的本地预览：只改内存，不发 op（松手才提交）
+    onPreview: function (piece, size) {
+      var p = pieces.get(piece.id);
+      if (!p) return;
+      if (p.sh === Token.TEXT_SHAPE) {
+        var k = size / Math.max(p.w, 1);
+        p.w = size;
+        p.h = Math.max(12, p.h * k);
+      } else {
+        p.w = p.h = size;
+      }
+      board.requestDraw();
+    }
   });
 
   // 对当前选择整体执行的辅助：单选就是长度 1 的批量
@@ -991,6 +1019,7 @@
     if (isDice) {
       items.push({ action: 'roll', label: '掷骰' + suffix });
       items.push({ sep: true });
+      items.push(sizeItem(one));
       items.push(colorItem(one));
       items.push({ sep: true });
       items.push({ action: 'lock', label: allLocked ? ('解冻' + suffix) : ('固定（冻结）' + suffix) });
@@ -1012,6 +1041,18 @@
         }),
         value: one.sh
       });
+      // 文字框才给文字输入
+      if (one.sh === Token.TEXT_SHAPE) {
+        items.push({
+          text: true,
+          action: 'text',
+          label: '文字' + (many ? '（各枚相同）' : ''),
+          value: one.tx || '',
+          maxLength: Token.TEXT_MAX,
+          placeholder: '输入文字，Enter 应用'
+        });
+      }
+      items.push(sizeItem(one));
       items.push(colorItem(one));
       items.push({ sep: true });
       items.push({ action: 'lock', label: allLocked ? ('解冻' + suffix) : ('固定（冻结）' + suffix) });
@@ -1079,6 +1120,17 @@
     menu.show(piece, items, at);
   }
 
+  // 菜单里的大小滑杆
+  function sizeItem(one) {
+    return {
+      size: true,
+      action: 'size',
+      label: '大小',
+      min: 16, max: 400, step: 1,
+      value: Math.round(one.w)
+    };
+  }
+
   // 菜单里的色板项
   function colorItem(one) {
     // 注意键名：menu.js 用 `colors` 数组的存在与否来识别色板项，
@@ -1130,7 +1182,7 @@
       case 'tint':
         sel.forEach(function (p) {
           if ((p.ds > 0 || p.sh > 0) && !p.lk) {
-            commit({ k: 'tint', id: p.id, c: value >>> 0 });
+            commit({ k: 'edit', id: p.id, c: value >>> 0 });
           }
         });
         break;
@@ -1140,7 +1192,34 @@
         var sh = value | 0;
         if (!sh) break;
         sel.forEach(function (p) {
-          if (p.sh > 0 && !p.lk) commit({ k: 'tint', id: p.id, sh: sh });
+          if (p.sh > 0 && !p.lk) commit({ k: 'edit', id: p.id, sh: sh });
+        });
+        break;
+      }
+
+      // 改大小（正方形物品宽高一起变；文字框只改宽度，高度按比例）
+      case 'size': {
+        var nsz = Number(value);
+        if (!isFinite(nsz)) break;
+        sel.forEach(function (p) {
+          if (!(p.ds > 0 || p.sh > 0) || p.lk) return;
+          if (p.sh === Token.TEXT_SHAPE) {
+            var k = nsz / Math.max(p.w, 1);
+            commit({ k: 'edit', id: p.id, w: nsz, h: Math.round(p.h * k) });
+          } else {
+            commit({ k: 'edit', id: p.id, w: nsz, h: nsz });
+          }
+        });
+        break;
+      }
+
+      // 文字框内容
+      case 'text': {
+        var txt = String(value == null ? '' : value).slice(0, Token.TEXT_MAX);
+        sel.forEach(function (p) {
+          if (p.sh === Token.TEXT_SHAPE && !p.lk) {
+            commit({ k: 'edit', id: p.id, tx: txt });
+          }
         });
         break;
       }
@@ -1296,7 +1375,7 @@
       var sel = selectedPieces();
       var n = 0;
       sel.forEach(function (p) {
-        if ((p.ds > 0 || p.sh > 0) && !p.lk) { commit({ k: 'tint', id: p.id, c: itemColor }); n++; }
+        if ((p.ds > 0 || p.sh > 0) && !p.lk) { commit({ k: 'edit', id: p.id, c: itemColor }); n++; }
       });
       if (n) flashNote('已给选中的 ' + n + ' 个物品改色');
     });
@@ -1371,17 +1450,28 @@
 
   // 幽灵里画一个该物品的缩略图（直接复用画布渲染器）
   function paintGhost(spec) {
-    var size = 44;
-    elGhost.width = size; elGhost.height = size;
+    var W = 64, H = 44;
+    elGhost.width = W; elGhost.height = H;
     var g = elGhost.getContext('2d');
-    g.clearRect(0, 0, size, size);
-    if (spec.kind === 'dice') Dice.draw(g, size / 2, size / 2 + 2, size * 0.72, spec.ds, Math.min(3, spec.ds), null, 5, itemColor);
-    else Token.draw(g, size / 2, size / 2 + 2, size * 0.62, spec.sh, itemColor);
+    g.clearRect(0, 0, W, H);
+    if (spec.kind === 'dice') {
+      Dice.draw(g, W / 2, H / 2, 32, spec.ds, Math.min(3, spec.ds), null, 5, itemColor);
+    } else if (spec.sh === Token.TEXT_SHAPE) {
+      // 文字框是横的，幽灵也按横的预览
+      Token.draw(g, W / 2, H / 2, 56, spec.sh, itemColor, '文字', 24);
+    } else {
+      Token.draw(g, W / 2, H / 2, 30, spec.sh, itemColor);
+    }
   }
 
   function dropItem(spec, wx, wy) {
     if (spec.kind === 'dice') {
       commit({ k: 'dice', ds: spec.ds, x: wx, y: wy, c: itemColor });
+    } else if (spec.sh === Token.TEXT_SHAPE) {
+      // 直接放一块空牌子，**不弹输入框**：
+      // 拖出来的动作应该立刻有结果，弹窗会打断手感。
+      // 放下后右键菜单里有「文字」一项可以随时改。
+      commit({ k: 'token', sh: 5, x: wx, y: wy, c: itemColor });
     } else {
       commit({ k: 'token', sh: spec.sh, x: wx, y: wy, c: itemColor });
     }
@@ -1409,7 +1499,7 @@
     elItemDice.appendChild(b);
   });
 
-  // 标记：方 / 圆 / 三角 / 星
+  // 标记：方 / 圆 / 三角 / 星 / 文字框
   Token.SHAPES.forEach(function (sh) {
     var b = document.createElement('button');
     b.type = 'button';
