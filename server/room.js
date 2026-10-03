@@ -636,13 +636,22 @@ class Room {
       case 'edit': {
         const p = this.pieces.get(op.id);
         if (!p || p.lk) return null;
-        if (!p.ds && !p.sh) return null;
+
+        // 大小对所有棋子开放；颜色 / 形状 / 文字只对骰子和标记有意义。
+        // 早期这里一刀切 `if (!p.ds && !p.sh) return null`，
+        // 于是普通棋子连缩放都被拒了 —— 但「调整大小」是通用需求
+        //（大板块要缩小、小卡片要放大），不该只给物品用。
+        const isItem = !!(p.ds || p.sh);
+        const wantsItemField = op.c != null || op.sh != null || op.tx != null;
+        const wantsSize = Room._finite(op.w) || Room._finite(op.h);
+        if (!isItem && !wantsSize) return null;
+        if (!isItem && wantsItemField && !wantsSize) return null;
 
         let changed = false;
 
-        if (op.c != null) { p.c = Room._color(op.c); changed = true; }
+        if (isItem && op.c != null) { p.c = Room._color(op.c); changed = true; }
 
-        if (op.sh != null && p.sh) {
+        if (isItem && op.sh != null && p.sh) {
           const ns = TOKEN_SHAPES.indexOf(op.sh | 0) >= 0 ? (op.sh | 0) : 0;
           if (ns && ns !== p.sh) {
             p.sh = ns;
@@ -655,17 +664,46 @@ class Room {
           }
         }
 
-        // 大小：宽高各自夹到合法区间。允许非等比（文字框就是要扁的）。
+        // 大小：宽高各自夹到合法区间。
+        //
+        // 三种情形要分开：
+        //   · 普通棋子（大板块是 1.5:1 的长方形）**按原比例**缩放，
+        //     否则一拉就变形，地图板块的图文会拉伸
+        //   · 文字框允许非等比（它本来就是扁的）
+        //   · 其它标记与骰子是正方形
         let nw = p.w, nh = p.h;
-        if (Room._finite(op.w)) nw = Math.max(ITEM_MIN, Math.min(ITEM_MAX, op.w));
-        if (Room._finite(op.h)) nh = Math.max(ITEM_MIN, Math.min(ITEM_MAX, op.h));
-        // 只给了一个维度时，另一方按原比例跟随（普通标记是正方形）
-        if (Room._finite(op.w) && !Room._finite(op.h) && p.sh !== 5) nh = nw;
-        if (Room._finite(op.h) && !Room._finite(op.w) && p.sh !== 5) nw = nh;
-        if (nw !== p.w || nh !== p.h) { p.w = nw; p.h = nh; changed = true; }
+        const aspect = (p.h > 0) ? (p.w / p.h) : 1;
+
+        if (Room._finite(op.w) && Room._finite(op.h)) {
+          nw = op.w; nh = op.h;
+        } else if (Room._finite(op.w)) {
+          nw = op.w;
+          nh = (p.sh === 5) ? p.h : (isItem ? op.w : op.w / (aspect || 1));
+        } else if (Room._finite(op.h)) {
+          nh = op.h;
+          nw = (p.sh === 5) ? p.w : (isItem ? op.h : op.h * (aspect || 1));
+        }
+
+        nw = Math.max(ITEM_MIN, Math.min(ITEM_MAX, nw));
+        nh = Math.max(ITEM_MIN, Math.min(ITEM_MAX, nh));
+        if (nw !== p.w || nh !== p.h) {
+          p.w = nw; p.h = nh;
+
+          // **多形态棋子必须同步当前形态的尺寸。**
+          //
+          // 存档里 st 是权威：codec.decode 会用 st[si] 的 w/h 覆盖顶层的
+          // （见 codec.js 的「多形态棋子的当前图片/尺寸以形态表为准」）。
+          // 只改顶层的话，缩放看上去生效、一存一读就打回原形 ——
+          // 实测 t503 缩到 300 后存档往返变回 384。
+          if (Array.isArray(p.st) && p.st[p.si]) {
+            p.st[p.si].w = nw;
+            p.st[p.si].h = nh;
+          }
+          changed = true;
+        }
 
         // 文字：只对文字框有意义，其它形状忽略了也不报错
-        if (op.tx != null) {
+        if (isItem && op.tx != null) {
           const t = String(op.tx).slice(0, TEXT_MAX);
           if (t !== (p.tx || '')) { p.tx = t; changed = true; }
         }

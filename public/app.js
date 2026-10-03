@@ -678,9 +678,17 @@
 
   function onDragStart(hit, wx, wy) {
     if (!hit) return;
-    if (hit.lk && !selection.has(hit.id)) return;   // 冻结的拖不动
 
-
+    // 冻结的棋子拖不动。
+    //
+    // 注意这里的条件是「按到的这枚」而不是「选择里是否包含它」：
+    // 早期写成 `hit.lk && !selection.has(hit.id)`，意思是「已选中的
+    // 冻结棋子允许拖」。但那会导致一个荒谬的结果 ——
+    // 冻结的棋子自己不动，**却把它上面压着的棋子全带走了**
+    //（因为 coverClosure 只排除冻结项，上面那些没冻的照样进批量）。
+    // 用户看到的是「冻着的东西纹丝不动，上面的牌却飞了」。
+    // 正确语义：按到冻结物 = 这一次拖动整个不成立。
+    if (hit.lk) return;
 
     // 起点处压着哪些棋子（含被覆盖的）。
     //
@@ -693,22 +701,21 @@
       if (selection.has(under[i].id)) { keepSel = true; break; }
     }
 
-    if (!keepSel) {
-      if (hit.lk) return;
-      selectOnly(hit);
-    }
+    if (!keepSel) selectOnly(hit);
 
     // 把压在选中棋子上的也拉进来（需求二）
     var closure = coverClosure(Array.from(selection));
 
-    // 冻结的棋子**完全不参与拖动**（视作钉在桌上）：
-    // 它们既不该跟着动，也不该进批量。
-    // 如果只在最后一步把它们剔出批量、却仍让 onDragMove 改它们的坐标，
-    // 屏幕上它们会跟着走、但服务端从不确认 —— 看起来就是「拖完弹回去」。
-    dragging = closure.filter(function (id) {
+    // 选择里若混着冻结的棋子，这次拖动同样不成立 ——
+    // 否则会拖走一半、留下一半，是最难解释的状态。
+    // 冻结是「钉在桌上」，钉住的东西不能被整体搬走。
+    var hasFrozen = closure.some(function (id) {
       var q = pieces.get(id);
-      return q && !q.lk;
+      return q && q.lk;
     });
+    if (hasFrozen) return;
+
+    dragging = closure;
     if (!dragging.length) return;
 
     dragStart = {};
@@ -1044,8 +1051,9 @@
     if (e.key === 'Escape') { clearSelection(); return; }
     // f = 适配全部（工具栏那个按钮撤了）
     if (e.key === 'f' && !selection.size) { fitPieces(); return; }
-    // R = 掷骰：优先掷选中的骰子，否则掷场上全部
-    if (e.key === 'R') {
+    // 掷骰：d（dice）或 R。优先掷选中的骰子，否则掷场上全部。
+    // 保留 R 是历史习惯，d 更好记 —— 两个都认，不必二选一。
+    if (e.key === 'd' || e.key === 'R') {
       var rollIds = [];
       selection.forEach(function (id) {
         var p = pieces.get(id);
@@ -1054,7 +1062,16 @@
       if (!rollIds.length) {
         pieces.forEach(function (p) { if (p.ds > 0 && !p.lk) rollIds.push(p.id); });
       }
-      if (rollIds.length) rollDice(rollIds);
+      if (rollIds.length) { e.preventDefault(); rollDice(rollIds); }
+      return;
+    }
+
+    // 删除：Delete / Backspace（和文件管理器一致）。
+    // 会走二次确认，与菜单里的删除同一路径。
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (!selection.size) return;
+      e.preventDefault();
+      doAction('del');
       return;
     }
     if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
@@ -1091,10 +1108,28 @@
     }
 
     if (!selection.size) return;
-    var one = pieces.get(selection.values().next().value);
-    if (!one) return;
-    if (e.key === 'f') commit({ k: 'flip', id: one.id, f: one.f ? 0 : 1 });
-    else if (e.key === 'r') commit({ k: 'rot', id: one.id, r: ((one.r || 0) + 90) % 360 });
+
+    // f = 翻面。**对全部选中项生效**，不是只翻第一枚 ——
+    // 原来写的是 pieces.get(第一枚)，选中十张牌按 f 只翻一张，
+    // 而菜单里的「翻面」是批量，两处行为不一致最容易让人困惑。
+    if (e.key === 'f') {
+      e.preventDefault();
+      selectedPieces().forEach(function (p) {
+        if (!p.lk) commit({ k: 'flip', id: p.id, f: p.f ? 0 : 1 });
+      });
+      return;
+    }
+
+    // r = 旋转 90°，同样对全部选中项生效
+    if (e.key === 'r') {
+      e.preventDefault();
+      selectedPieces().forEach(function (p) {
+        if (!p.lk) commit({ k: 'rot', id: p.id, r: normR((p.r || 0) + 90) });
+      });
+      return;
+    }
+
+    // Delete 已在上面处理；其余按键不再拦截
   });
 
   /* ---------- 右键菜单（桌面右键 / 手机长按） ---------- */
@@ -1109,7 +1144,13 @@
     onPreview: function (piece, size) {
       var p = pieces.get(piece.id);
       if (!p) return;
-      if (p.sh === Token.TEXT_SHAPE) {
+      var isItem = (p.ds > 0 || p.sh > 0);
+      if (!isItem) {
+        // 普通棋子按原比例预览（和服务端算法一致）
+        var a = (p.h > 0) ? (p.w / p.h) : 1;
+        p.w = size;
+        p.h = size / (a || 1);
+      } else if (p.sh === Token.TEXT_SHAPE) {
         var k = size / Math.max(p.w, 1);
         p.w = size;
         p.h = Math.max(12, p.h * k);
@@ -1186,6 +1227,9 @@
     }
 
     items.push({ action: 'flip', label: '翻面' + suffix });
+    // 大小对所有棋子开放（大板块要缩小、小卡片要放大）。
+    // 多选时以第一枚的宽度为起点，各枚按自己的比例缩放。
+    items.push(sizeItem(one));
 
     // ---- 旋转：滑杆支持任意角度，不再是只能 90° 一档 ----
     //
@@ -1249,7 +1293,8 @@
       size: true,
       action: 'size',
       label: '大小',
-      min: 16, max: 400, step: 1,
+      // 上限要罩得住最大的底图板块（实测 w=768），否则拉不满
+      min: 8, max: 1600, step: 1,
       value: Math.round(one.w)
     };
   }
@@ -1325,8 +1370,13 @@
         var nsz = Number(value);
         if (!isFinite(nsz)) break;
         sel.forEach(function (p) {
-          if (!(p.ds > 0 || p.sh > 0) || p.lk) return;
-          if (p.sh === Token.TEXT_SHAPE) {
+          if (p.lk) return;
+          var isItem = (p.ds > 0 || p.sh > 0);
+          if (!isItem) {
+            // 普通棋子（含 1.5:1 的地图板块）按**原比例**缩放，
+            // 否则地图会被拉变形。只发 w，服务端按比例算 h。
+            commit({ k: 'edit', id: p.id, w: nsz });
+          } else if (p.sh === Token.TEXT_SHAPE) {
             var k = nsz / Math.max(p.w, 1);
             commit({ k: 'edit', id: p.id, w: nsz, h: Math.round(p.h * k) });
           } else {

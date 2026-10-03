@@ -195,7 +195,18 @@
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.clearRect(0, 0, size.w, size.h);
 
-      // 框选矩形画在屏幕坐标系（不随缩放的线宽变化，视觉更稳）
+      if (drawer) {
+        g.save();
+        g.scale(view.s, view.s);   // 不 translate —— 见文件头第 4 条
+        drawer(g, view);
+        g.restore();
+      }
+
+      // 框选矩形画在**所有内容之后**。
+      //
+      // 原来它画在 drawer 之前，于是桌上任意一枚棋子都会盖住它 ——
+      // 框选恰恰是在「一片棋子」上操作的，看不见框等于这个功能废掉。
+      // 它画在屏幕坐标系（不随缩放的线宽变化，视觉更稳）。
       if (marquee) {
         var x = Math.min(marquee.x0, marquee.x1);
         var y = Math.min(marquee.y0, marquee.y1);
@@ -211,13 +222,6 @@
         g.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.round(w), Math.round(h));
         g.restore();
       }
-
-      if (!drawer) return;
-
-      g.save();
-      g.scale(view.s, view.s);   // 不 translate —— 见文件头第 4 条
-      drawer(g, view);
-      g.restore();
     }
 
     /* ---------- 尺寸 ---------- */
