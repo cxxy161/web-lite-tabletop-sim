@@ -11,3 +11,7 @@ data/
 # 且是接口契约的一部分，所以单独放行（见下）。
 大洋落日_资产.zip
 public/assets/*.webp
+
+# Python
+__pycache__/
+*.pyc
