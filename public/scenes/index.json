@@ -1,0 +1,74 @@
+[
+ {
+  "slug": "scene-01",
+  "label": "大洋落日",
+  "source": "Saves/TS_AutoSave.json",
+  "count": 669
+ },
+ {
+  "slug": "scene-02",
+  "label": "大洋落日",
+  "source": "Saves/TS_AutoSave_2.json",
+  "count": 530
+ },
+ {
+  "slug": "scene-03",
+  "label": "大洋落日",
+  "source": "Saves/TS_AutoSave_3.json",
+  "count": 530
+ },
+ {
+  "slug": "scene-04",
+  "label": "初设",
+  "source": "Saves/大洋落日/TS_Save_1.json",
+  "count": 530
+ },
+ {
+  "slug": "scene-05",
+  "label": "初设",
+  "source": "Saves/大洋落日/TS_Save_2.json",
+  "count": 562
+ },
+ {
+  "slug": "scene-06",
+  "label": "大洋落日day1-3",
+  "source": "Saves/大洋落日/TS_Save_3.json",
+  "count": 607
+ },
+ {
+  "slug": "scene-07",
+  "label": "大洋落日d3-1，正在航空移动",
+  "source": "Saves/大洋落日/TS_Save_5.json",
+  "count": 609
+ },
+ {
+  "slug": "scene-08",
+  "label": "-初设",
+  "source": "Saves/大洋落日/中途岛短1/TS_Save_11.json",
+  "count": 778
+ },
+ {
+  "slug": "scene-09",
+  "label": "初设1",
+  "source": "Saves/大洋落日/珊瑚海短1/TS_Save_6.json",
+  "count": 733
+ },
+ {
+  "slug": "scene-10",
+  "label": "初设完",
+  "source": "Saves/大洋落日/珊瑚海短1/TS_Save_7.json",
+  "count": 733
+ },
+ {
+  "slug": "scene-11",
+  "label": "1-2-移动节",
+  "source": "Saves/大洋落日/珊瑚海短1/TS_Save_8.json",
+  "count": 755
+ },
+ {
+  "slug": "scene-12",
+  "label": "2-2 战斗完",
+  "source": "Saves/大洋落日/珊瑚海短1/TS_Save_9.json",
+  "count": 760
+ }
+]

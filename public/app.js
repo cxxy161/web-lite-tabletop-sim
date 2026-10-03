@@ -2,39 +2,42 @@
  * app.js —— 组装层：状态 + 渲染 + 输入 + 网络
  *
  * 分层原则：
- *   board.js  只认世界坐标、命中、位移，不知道「棋子」是什么
- *   net.js    只认字节
- *   app.js    在这里把两边接起来，并持有唯一的权威状态副本
+ *   board.js   只认世界坐标、命中、位移，不知道「棋子」是什么
+ *   texture.js 管贴图加载与 LRU，不知道棋子在哪儿
+ *   net.js     只认字节
+ *   app.js     在这里把三方接起来，并持有唯一的权威状态副本
  *
- * 交互模型（本次重做）
+ * 棋子数据（来自场景转换）：
+ *   { id, x, y, r, f, w, h, img, bimg, z }
+ *   每枚棋子有自己的宽高 —— 真实资产里 scale 从 0.6 到 15，
+ *   底图板块还是长方形，不能像早期 demo 那样全局写死边长。
+ *
+ * 交互模型
  *   - 点击棋子 = 选中它（替换原选择）
- *   - 拖动棋子 = 移动（单选就是移动一枚，多选就是整组一起移动）
+ *   - 拖动棋子 = 移动（多选则整组移动）
  *   - 点击空白 = 取消选择
  *   - Shift+点击 / 长按 = 加选、减选
  *   - 拖动空白 = 平移地图
  *
- * 层叠序（z）
- *   每个被移动过的棋子从服务端拿一个递增 z，绘制时按 z 升序，
- *   于是「最后放的在最上面」。z 由服务端分配 —— 客户端自己发的话，
- *   两端对「谁更晚」判断不一致，重叠时的上下关系会各画各的。
- *   翻面/旋转不改变 z（只有「放」才改变层叠）。
- *
- * 坐标：棋子位置是任意浮点世界坐标（棋子中心），无网格、无吸附、无边界。
- *
- * 绘制坐标系（见 board.js 文件头第 4 条）：
- *   canvas 已 scale(view.s) 但未 translate，
- *   所以绘制坐标 = 世界坐标 - (view.ox, view.oy)。
- *   写成 p.x - view.ox 而不是 p.x + view.tx/view.s，
- *   是为避免在超大坐标下丢精度。
+ * 层叠序 z：由服务端分配，绘制按 z 升序、命中取 z 最大，
+ * 于是「最后放的在最上面」。翻面/旋转不改 z。
  */
 (function (global) {
   'use strict';
 
-  /* ---------- 配置 ---------- */
+  var ACCENT = '#c2703f';
+  var SELECT_FILL = 'rgba(194,112,63,.18)';
 
-  var PIECE = 64;          // 棋子的世界尺寸（逻辑单位，不是像素）
-  var ACCENT = '#c2703f';  // 选中色（暖陶土色，配米白底）
-  var SELECT_FILL = 'rgba(194,112,63,.13)';
+  // 细节层次阈值（屏幕像素）。棋子的屏幕长边小于这个值时**不加载贴图**，
+  // 改画一个纯色块。
+  //
+  // 这不是省事的偷懒，而是低配机能跑起来的必要条件：
+  // 全场景适配时 778 枚棋子全在屏幕上，如果每枚都要真贴图，
+  // LRU 一个也淘汰不掉（全都「可见」），瞬间就要
+  // 778 × 192×192×4B ≈ 114MB 显存 —— 老手机必崩。
+  // 缩到 8px 的卡面本来也看不出画的是什么，
+  // 用色块顶上既保住帧率又不损失可读信息。
+  var LOD_MIN = 18;
 
   var qs = new URLSearchParams(global.location.search);
   var ROOM = (qs.get('room') || 'demo').replace(/[^\w-]/g, '').slice(0, 32) || 'demo';
@@ -42,15 +45,14 @@
 
   /* ---------- 状态 ---------- */
 
-  var pieces = new Map();      // id -> {id,x,y,r,f,k,z}
-  var selection = new Set();   // 选中的棋子 id
-  var dragging = null;         // 正在拖拽的棋子 id 集合（数组），null = 没在拖
-  var dragStart = null;        // id -> {x,y} 拖拽起点快照
+  var pieces = new Map();      // id -> piece
+  var selection = new Set();
+  var dragging = null;         // 正在拖拽的 id 数组
+  var dragStart = null;        // id -> {x,y}
   var dragMoved = false;
-  var zMax = 0;                // 本地乐观分配 z 用；会被服务端的值覆盖
+  var zMax = 0;
   var seq = 0;
 
-  // 绘制/命中顺序缓存：按 z 升序（数组末尾 = 最上面）
   var order = [];
   var orderDirty = true;
 
@@ -60,22 +62,18 @@
   var elHudSeq = document.getElementById('hud-seq');
   var elHudPos = document.getElementById('hud-pos');
   var elHudSel = document.getElementById('hud-sel');
+  var elHudScene = document.getElementById('hud-scene');
+  var elTex = document.getElementById('hud-tex');
 
   elHudRoom.textContent = ROOM;
 
-  /* ---------- 图集 ---------- */
+  /* ---------- 贴图 ---------- */
 
-  var atlas = global.Atlas.build();
-  var ACell = global.Atlas.CELL;
-
-  function ordered() {
-    if (orderDirty) {
-      order = Array.from(pieces.values());
-      order.sort(function (a, b) { return (a.z || 0) - (b.z || 0); });
-      orderDirty = false;
-    }
-    return order;
-  }
+  var tex = global.Texture.create({
+    base: 'assets/',
+    white: 'assets/white.webp',
+    onReady: function () { board.requestDraw(); }
+  });
 
   /* ---------- 渲染器 ---------- */
 
@@ -91,23 +89,16 @@
     onDragEnd: onDragEnd
   });
 
-  board.setHitTest(function (wx, wy) {
-    return pick(wx, wy);
-  });
+  board.setHitTest(function (wx, wy) { return pick(wx, wy); });
 
   board.setDrawer(function (g, view) {
     var s = view.s;
     var ox = view.ox, oy = view.oy;
-    var w = board.size.w, h = board.size.h;
-    var half = PIECE / 2;
-    var showRing = PIECE * s >= 12;   // 缩得太小时省掉选中框，优先保帧率
-
-    // 视口裁剪：无限地图上没必要画屏幕外的
-    var m = PIECE;
-    var x0 = ox - m, x1 = ox + w / s + m;
-    var y0 = oy - m, y1 = oy + h / s + m;
+    var vw = board.size.w, vh = board.size.h;
+    var showRing = s >= 0.05;
 
     var list = ordered();
+    var used = [];
     var dragSet = null;
     if (dragging) {
       dragSet = {};
@@ -119,69 +110,88 @@
       for (var i = 0; i < list.length; i++) {
         var p = list[i];
         var isDrag = dragSet && dragSet[p.id];
-
         if (pass === 0 && isDrag) continue;
         if (pass === 1 && !isDrag) continue;
 
-        if (p.x + half < x0 || p.x - half > x1) continue;
-        if (p.y + half < y0 || p.y - half > y1) continue;
-
-        var idx = global.Atlas.indexOf(p.k, p.f);
-        var sx = (idx % global.Atlas.COLS) * ACell;
-        var sy = Math.floor(idx / global.Atlas.COLS) * ACell;
+        // 视口裁剪（用这枚棋子自己的尺寸，大板块不能按小棋子算）
+        var hw = p.w / 2, hh = p.h / 2;
+        if (p.x + hw < ox - hw || p.x - hw > ox + vw / s + hw) continue;
+        if (p.y + hh < oy - hh || p.y - hh > oy + vh / s + hh) continue;
 
         var cx = p.x - ox;
         var cy = p.y - oy;
         var rr = p.r || 0;
-        var sel = selection.has(p.id);
 
-        if (sel && showRing) {
-          // 选中底座：让多选时每一枚都看得清
-          g.fillStyle = SELECT_FILL;
-          roundRect(g, cx - half, cy - half, PIECE, PIECE, 10);
-          g.fill();
+        // LOD：屏幕长边太小就不加载贴图，画色块。
+        // 这是「全场景缩放时显存不爆」的关键闸门，见文件头 LOD_MIN 注释。
+        var screenLong = Math.max(p.w, p.h) * s;
+        if (screenLong < LOD_MIN) {
+          g.fillStyle = p.f ? '#cfc6b4' : '#b9ac93';
+          g.fillRect(cx - hw, cy - hh, p.w, p.h);
+          if (selection.has(p.id) && showRing) strokeSel(g, cx - hw, cy - hh, p.w, p.h, s);
+          continue;
         }
 
-        if (rr) {
+        var t = tex.get(p.f ? p.bimg : p.img);
+        used.push(p.f ? p.bimg : p.img);
+
+        // 旋转非 0/180 时才走 save/rotate（大多数棋子是 180，直接跳过省开销）
+        var trivial = (rr < 0.5 || Math.abs(rr - 180) < 0.5);
+
+        if (trivial) {
+          // 180 度等价于「上下左右都翻转」，用负步长缩放实现，比 rotate 便宜
+          if (Math.abs(rr - 180) < 0.5) {
+            g.save();
+            g.translate(cx, cy);
+            g.scale(-1, -1);
+            g.drawImage(t.img, -hw, -hh, p.w, p.h);
+            g.restore();
+          } else {
+            g.drawImage(t.img, cx - hw, cy - hh, p.w, p.h);
+          }
+          if (selection.has(p.id) && showRing) strokeSel(g, cx - hw, cy - hh, p.w, p.h, s);
+        } else {
           g.save();
           g.translate(cx, cy);
           g.rotate(rr * Math.PI / 180);
-          g.drawImage(atlas, sx, sy, ACell, ACell, -half, -half, PIECE, PIECE);
-          if (sel && showRing) strokeSel(g, -half, -half, s);
+          g.drawImage(t.img, -hw, -hh, p.w, p.h);
           g.restore();
-        } else {
-          g.drawImage(atlas, sx, sy, ACell, ACell, cx - half, cy - half, PIECE, PIECE);
-          if (sel && showRing) strokeSel(g, cx - half, cy - half, s);
+          if (selection.has(p.id) && showRing) {
+            // 选中框不跟着转，保持正立，否则旋转的棋子选框会歪
+            strokeSel(g, cx - hw, cy - hh, p.w, p.h, s);
+          }
         }
       }
     }
+
+    tex.markFrame(used);      // 钉住本帧用到的贴图，其余可被 LRU 淘汰
   });
 
-  function roundRect(g, x, y, w, h, r) {
-    g.beginPath();
-    g.moveTo(x + r, y);
-    g.arcTo(x + w, y, x + w, y + h, r);
-    g.arcTo(x + w, y + h, x, y + h, r);
-    g.arcTo(x, y + h, x, y, r);
-    g.arcTo(x, y, x + w, y, r);
-    g.closePath();
-  }
-
-  function strokeSel(g, x, y, s) {
+  function strokeSel(g, x, y, w, h, s) {
     g.strokeStyle = ACCENT;
     g.lineWidth = 2.5 / Math.max(s, 0.05);
-    roundRect(g, x + 1.5, y + 1.5, PIECE - 3, PIECE - 3, 9);
-    g.stroke();
+    g.strokeRect(x, y, w, h);
   }
 
-  // 命中测试：取 z 最大的（最上面那枚）
+  /* ---------- 顺序 / 命中 ---------- */
+
+  function ordered() {
+    if (orderDirty) {
+      order = Array.from(pieces.values());
+      order.sort(function (a, b) { return (a.z || 0) - (b.z || 0); });
+      orderDirty = false;
+    }
+    return order;
+  }
+
+  // 取 z 最大的（最上面那枚）；按各自矩形判定
   function pick(wx, wy) {
-    var half = PIECE / 2;
     var list = ordered();
     for (var i = list.length - 1; i >= 0; i--) {
       var p = list[i];
-      if (wx >= p.x - half && wx <= p.x + half &&
-          wy >= p.y - half && wy <= p.y + half) {
+      var hw = p.w / 2, hh = p.h / 2;
+      if (wx >= p.x - hw && wx <= p.x + hw &&
+          wy >= p.y - hh && wy <= p.y + hh) {
         return p;
       }
     }
@@ -190,9 +200,7 @@
 
   /* ---------- 操作 ---------- */
 
-  function sendOp(op) {
-    net.send({ t: 'op', op: op });
-  }
+  function sendOp(op) { net.send({ t: 'op', op: op }); }
 
   function applyOp(op, fromRemote) {
     if (op.k === 'move' && Array.isArray(op.list)) {
@@ -266,32 +274,20 @@
   function onTap(e) {
     setHudPos(e.wx, e.wy);
 
-    if (!e.hit) {
-      // 点空白 = 取消选择
-      clearSelection();
-      return;
-    }
+    if (!e.hit) { clearSelection(); return; }
 
-    // onTap 只在「按下-抬起之间没有拖动」时才会走到这里
-    //（一拖就进 drag 分支，onTap 不触发）。
-    // 所以这里可以放心地做两件事：
-    //   shift+点击 -> 加选 / 减选
-    //   普通点击   -> 替换选择，即使点在已选中的一员上
-    //                 （想整组拖就直接拖，那条路径不会经过这里）
+    // onTap 只在「按下-抬起之间没拖动」时触发，
+    // 所以这里可以放心：shift = 加选/减选，普通 = 替换选择。
     if (e.shiftKey) toggleSelect(e.hit);
     else selectOnly(e.hit);
   }
 
   function onLongPress(hit) {
-    // 触屏上的加选/减选（手机没有 shift）
-    if (hit) toggleSelect(hit);
+    if (hit) toggleSelect(hit);      // 触屏加选（手机没有 shift）
   }
 
-  function onDragStart(hit, wx, wy) {
+  function onDragStart(hit) {
     if (!hit) return;
-
-    // 拖的是「已选中的一员」-> 整组一起移动；
-    // 否则这次拖拽先把选择收缩到它自己。
     if (!selection.has(hit.id)) selectOnly(hit);
 
     dragging = Array.from(selection);
@@ -317,7 +313,7 @@
     board.requestDraw();
   }
 
-  function onDragEnd(hit, delta, interrupted) {
+  function onDragEnd() {
     if (!dragging || !dragStart) { dragging = null; dragStart = null; return; }
 
     var ids = dragging;
@@ -326,9 +322,7 @@
     if (!dragMoved) { dragStart = null; return; }
     dragMoved = false;
 
-    // 乐观分配 z：立刻把被拖的压到最上层。
-    // 服务端会在回显里给出权威 z，把这里的值覆盖掉，
-    // 所以即使这一步猜错了，最终仍会收敛。
+    // 乐观分配 z（立刻压到最上层），服务端回显会覆盖成权威值
     var list = [];
     for (var i = 0; i < ids.length; i++) {
       var p = pieces.get(ids[i]);
@@ -343,7 +337,6 @@
     if (list.length) sendOp({ k: 'move', list: list });
   }
 
-  // 桌面端右键：翻面；Shift+右键：旋转 90°
   function onContext(e) {
     var p = e.hit;
     if (!p) return;
@@ -369,15 +362,23 @@
     elHudSeq.textContent = 'seq ' + seq;
   }
 
+  function syncTex() {
+    if (!elTex) return;
+    var s = tex.stats();
+    elTex.textContent = '贴图 ' + s.ready + '/' + s.cached + (s.pending ? ' +' + s.pending : '');
+  }
+
+  setInterval(syncTex, 600);   // 贴图统计不进绘制循环，免得每帧都在刷 DOM
+
   function bounds() {
     if (!pieces.size) return null;
     var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    var h = PIECE / 2;
     pieces.forEach(function (p) {
-      if (p.x - h < x0) x0 = p.x - h;
-      if (p.y - h < y0) y0 = p.y - h;
-      if (p.x + h > x1) x1 = p.x + h;
-      if (p.y + h > y1) y1 = p.y + h;
+      var hw = p.w / 2, hh = p.h / 2;
+      if (p.x - hw < x0) x0 = p.x - hw;
+      if (p.y - hh < y0) y0 = p.y - hh;
+      if (p.x + hw > x1) x1 = p.x + hw;
+      if (p.y + hh > y1) y1 = p.y + hh;
     });
     return { x0: x0, y0: y0, x1: x1, y1: y1 };
   }
@@ -421,17 +422,20 @@
       });
 
       orderDirty = true;
+      if (elHudScene) elHudScene.textContent = m.label || m.scene || '—';
+
       fitPieces();
       board.requestDraw();
       syncHud();
       syncHudSel();
+      syncTex();
     },
 
     onOp: function (m) {
       seq = m.seq | 0;
       applyOp(m.op, true);
 
-      // 远端把棋子删了/换了集合时要清理悬空选择
+      // 远端换了盘面时要清掉悬空选择
       if (selection.size) {
         selection.forEach(function (id) {
           if (!pieces.has(id)) selection.delete(id);
@@ -450,7 +454,6 @@
   /* ---------- 工具按钮 ---------- */
 
   document.getElementById('btn-fit').addEventListener('click', fitPieces);
-
   document.getElementById('btn-origin').addEventListener('click', function () {
     board.resetView();
   });
@@ -472,9 +475,11 @@
     });
   });
 
-  /* ---------- 键盘（桌面端） ---------- */
+  /* ---------- 键盘 ---------- */
 
   global.addEventListener('keydown', function (e) {
+    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+
     if (e.key === '0') { board.resetView(); return; }
     if (e.key === 'Escape') { clearSelection(); return; }
     if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
@@ -486,7 +491,6 @@
       return;
     }
 
-    // 方向键微调：有选择时移动选中的，步长 1 / Shift 为 10
     var step = e.shiftKey ? 10 : 1;
     var dx = 0, dy = 0;
     if (e.key === 'ArrowLeft') dx = -step;
@@ -523,15 +527,17 @@
   board.resetView();
   syncHud();
   syncHudSel();
+  syncTex();
 
   global.__app = {
     pieces: pieces,
     selection: selection,
     board: board,
     net: net,
+    tex: tex,
     commit: commit,
     bounds: bounds,
     ordered: ordered,
-    PIECE: PIECE
+    pick: pick
   };
 })(window);

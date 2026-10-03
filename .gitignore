@@ -1,5 +1,13 @@
 node_modules/
 data/
 .npm-cache/
+.work/
 *.log
 .DS_Store
+
+# 原始资产包（254MB）与管线产物都不进版本库。
+# 产物可由 tools/build_assets.py 从原始包完整重建；
+# 但 scenes/ 与 assets/index.json 的「索引」体积很小、
+# 且是接口契约的一部分，所以单独放行（见下）。
+大洋落日_资产.zip
+public/assets/*.webp

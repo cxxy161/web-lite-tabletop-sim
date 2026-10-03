@@ -1,0 +1,5 @@
+# 资产是二进制，别让 git 试图做行尾转换或文本 diff
+*.webp binary
+*.jpg binary
+*.png binary
+*.zip binary
